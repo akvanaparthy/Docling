@@ -1,0 +1,8 @@
+docling
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+markdown
+pytest
+pytest-asyncio
