@@ -1,7 +1,9 @@
 import asyncio
+import json as _json
 import logging
 import queue
 import shutil
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -10,7 +12,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 UPLOADS = Path("uploads")
@@ -57,8 +59,90 @@ async def cleanup_loop():
 executor = ThreadPoolExecutor(max_workers=2)
 
 
-def _run_conversion(job_id, source, pipeline, ocr, fmt):
-    raise NotImplementedError("_run_conversion is not yet implemented (Task 3)")
+EXT_MAP = {"md": ".md", "html": ".html", "json": ".json", "doctags": ".doctags"}
+
+_thread_local = threading.local()  # stores current job_id per worker thread
+
+
+def _export_result(result, fmt: str) -> str:
+    doc = result.document
+    if fmt == "md":
+        return doc.export_to_markdown()
+    elif fmt == "html":
+        import markdown as md_lib
+        return md_lib.markdown(doc.export_to_markdown())
+    elif fmt == "json":
+        import json
+        return json.dumps(doc.model_dump(), indent=2)
+    elif fmt == "doctags":
+        return doc.export_to_doctags()
+    raise ValueError(f"Unknown format: {fmt}")
+
+
+class _JobFilter(logging.Filter):
+    """Only passes log records emitted from the thread owning this job."""
+    def __init__(self, job_id: str):
+        super().__init__()
+        self._job_id = job_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return getattr(_thread_local, "job_id", None) == self._job_id
+
+
+class _QueueHandler(logging.Handler):
+    def __init__(self, q: queue.Queue):
+        super().__init__()
+        self.q = q
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self.q.put_nowait(self.format(record))
+        except Exception:
+            pass
+
+
+def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str):
+    _thread_local.job_id = job_id  # mark this thread with the job_id for log filtering
+    job = jobs[job_id]
+    job["status"] = "running"
+
+    handler = _QueueHandler(job["queue"])
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    handler.addFilter(_JobFilter(job_id))  # only capture this thread's logs
+    docling_logger = logging.getLogger("docling")
+    docling_logger.addHandler(handler)
+
+    try:
+        from docling.document_converter import DocumentConverter
+        from docling.datamodel.pipeline_options import PipelineOptions
+
+        if pipeline == "vlm":
+            try:
+                from docling.datamodel.pipeline_options import VlmPipelineOptions
+                opts = VlmPipelineOptions(do_ocr=ocr)
+            except ImportError:
+                opts = PipelineOptions(do_ocr=ocr)
+        else:
+            opts = PipelineOptions(do_ocr=ocr)
+
+        converter = DocumentConverter()
+        result = converter.convert(source)
+
+        text = _export_result(result, fmt)
+        out_dir = OUTPUTS / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ext = EXT_MAP[fmt]
+        out_path = out_dir / f"result{ext}"
+        out_path.write_text(text, encoding="utf-8")
+
+        job["result_path"] = out_path
+        job["status"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+    finally:
+        docling_logger.removeHandler(handler)
+        job["queue"].put(None)  # sentinel
 
 
 def torch_cuda_available() -> bool:
@@ -139,6 +223,73 @@ async def convert(
 
     executor.submit(_run_conversion, job_id, source, pipeline, ocr, format)
     return {"job_id": job_id}
+
+
+@app.get("/stream/{job_id}")
+async def stream(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found.")
+
+    async def generator():
+        job = jobs[job_id]
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                # run_in_executor so blocking queue.get doesn't block the event loop
+                msg = await loop.run_in_executor(
+                    None, lambda: job["queue"].get(timeout=0.1)
+                )
+            except queue.Empty:
+                if job["status"] in ("done", "error"):
+                    # queue fully drained, job already finished before client connected
+                    if job["status"] == "error":
+                        yield f"event: error\ndata: {job['error']}\n\n"
+                    else:
+                        yield f"event: done\ndata: {_json.dumps({'format': job['format']})}\n\n"
+                    return
+                continue
+            else:
+                if msg is None:  # sentinel
+                    if job["status"] == "error":
+                        yield f"event: error\ndata: {job['error']}\n\n"
+                    else:
+                        yield f"event: done\ndata: {_json.dumps({'format': job['format']})}\n\n"
+                    return
+                yield f"event: log\ndata: {msg}\n\n"
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+MIME_MAP = {
+    ".md": "text/markdown",
+    ".html": "text/html",
+    ".json": "application/json",
+    ".doctags": "text/plain",
+}
+
+
+@app.get("/result/{job_id}")
+def result(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job["status"] != "done":
+        raise HTTPException(404, "Result not available.")
+    content = job["result_path"].read_text(encoding="utf-8")
+    return {"content": content, "format": job["format"]}
+
+
+@app.get("/download/{job_id}")
+def download(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job["status"] != "done":
+        raise HTTPException(404, "Result not available.")
+    path = job["result_path"]
+    mime = MIME_MAP.get(path.suffix, "text/plain")
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=f"result{path.suffix}",
+        headers={"Content-Disposition": f"attachment; filename=result{path.suffix}"},
+    )
 
 
 if __name__ == "__main__":
