@@ -35,13 +35,38 @@
     <div class="options">
       <div class="option-group">
         <label>Pipeline</label>
-        <select id="pipeline">
+        <select id="pipeline" onchange="updateVlmSection()">
           <option value="standard">Standard</option>
           <option value="vlm">VLM (GPU required)</option>
         </select>
       </div>
       <div class="option-group">
+        <label>PDF Backend</label>
+        <select id="pdf-backend">
+          <option value="docling">DoclingParse</option>
+          <option value="pypdfium">PyPdfium</option>
+        </select>
+      </div>
+      <div class="option-group">
         <label><input type="checkbox" id="ocr" checked> OCR</label>
+      </div>
+      <div class="option-group">
+        <label><input type="checkbox" id="do-picture-description" onchange="updatePicDescSection()"> Describe pictures</label>
+      </div>
+      <div class="option-group">
+        <label>Pages</label>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input type="number" id="page-from" value="1" min="1" class="tokens-input" placeholder="1">
+          <span style="color:#555;font-size:12px">to</span>
+          <input type="number" id="page-to" value="" min="1" class="tokens-input" placeholder="end">
+        </div>
+      </div>
+      <div class="option-group">
+        <label><input type="checkbox" id="do-chunk" onchange="updateChunkSection()"> Chunk</label>
+      </div>
+      <div class="option-group" id="chunk-tokens-group" style="display:none">
+        <label>Max tokens</label>
+        <input type="number" id="chunk-max-tokens" value="256" min="64" max="2048" step="64" class="tokens-input">
       </div>
       <div class="option-group">
         <label>Export format</label>
@@ -54,21 +79,70 @@
       </div>
     </div>
 
-    <button id="convert-btn" onclick="startConvert()">Convert</button>
-
-    <!-- Log console -->
-    <div class="console-wrap" id="console-wrap" style="display:none">
-      <div class="console-header">Logs</div>
-      <pre id="log-console" class="console"></pre>
+    <!-- VLM model selector (shown when pipeline=vlm) -->
+    <div id="vlm-model-section" style="display:none" class="vlm-model-section">
+      <div class="vlm-model-header">VLM Model</div>
+      <div id="vlm-model-list"></div>
     </div>
 
-    <!-- Output -->
-    <div id="output-section" style="display:none">
-      <div class="output-header">
-        <span>Output</span>
-        <a id="download-btn" class="btn-download">Download</a>
+    <!-- Picture description model selector (shown when describe pictures is checked) -->
+    <div id="pic-desc-section" style="display:none" class="vlm-model-section">
+      <div class="vlm-model-header">Picture Description Model</div>
+      <div id="pic-desc-model-list"></div>
+    </div>
+
+    <button id="convert-btn" onclick="startConvert()">Convert</button>
+
+    <!-- Main content area: logs+output left, timing right -->
+    <div class="content-row" id="content-row" style="display:none">
+
+      <div class="content-left">
+        <!-- Log console -->
+        <div class="console-wrap" id="console-wrap">
+          <div class="console-header">Logs</div>
+          <pre id="log-console" class="console"></pre>
+        </div>
+
+        <!-- Output -->
+        <div id="output-section" style="display:none">
+          <div class="output-header">
+            <span>Output</span>
+            <div style="display:flex;gap:6px">
+              <button id="copy-btn" class="btn-download" onclick="copyOutput()">Copy</button>
+              <a id="download-btn" class="btn-download">Download</a>
+            </div>
+          </div>
+          <pre id="output-preview" class="output-preview"></pre>
+        </div>
+
+        <!-- Chunks -->
+        <div id="chunks-section" style="display:none">
+          <div class="output-header">
+            <span>Chunks <span id="chunk-count" style="color:#555"></span></span>
+            <div style="display:flex;gap:6px">
+              <button class="btn-download" onclick="copyChunks()">Copy JSON</button>
+              <a id="chunks-download-btn" class="btn-download">Download</a>
+            </div>
+          </div>
+          <div id="chunks-list"></div>
+        </div>
       </div>
-      <pre id="output-preview" class="output-preview"></pre>
+
+      <!-- Timing panel -->
+      <div class="timing-panel" id="timing-panel">
+        <div class="timing-header">Timing</div>
+        <div class="timing-elapsed">
+          <span class="t-label">Elapsed</span>
+          <span class="t-value" id="t-elapsed">0.0s</span>
+        </div>
+        <div class="timing-divider"></div>
+        <div id="timing-rows"></div>
+        <div id="job-info-section" style="display:none">
+          <div class="timing-divider"></div>
+          <div id="job-info-rows"></div>
+        </div>
+      </div>
+
     </div>
   </div>
 
