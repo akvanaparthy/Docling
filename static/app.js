@@ -15,7 +15,9 @@ function switchTab(tab) {
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
 
-dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('click', (e) => {
+  if (e.target.tagName !== 'LABEL') fileInput.click();
+});
 dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
 dropzone.addEventListener('drop', e => {
@@ -105,6 +107,7 @@ async function startConvert() {
       document.getElementById('output-preview').textContent = data.content;
       const dl = document.getElementById('download-btn');
       dl.href = `/download/${jobId}`;
+      dl.download = 'result';
       document.getElementById('output-section').style.display = '';
     } catch (e) {
       appendLog('ERROR: Failed to fetch result: ' + e.message, 'err');
