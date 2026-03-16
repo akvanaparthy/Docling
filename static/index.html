@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docling UI</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Docling</h1>
+    <p class="subtitle">Document converter</p>
+
+    <!-- Input tabs -->
+    <div class="tabs">
+      <button class="tab active" id="tab-file" onclick="switchTab('file')">File</button>
+      <button class="tab" id="tab-url" onclick="switchTab('url')">URL</button>
+    </div>
+
+    <div id="input-file">
+      <div class="dropzone" id="dropzone">
+        <p>Drop a file here or <label for="file-input" class="link">browse</label></p>
+        <p class="hint">PDF, DOCX, PPTX, XLSX, HTML, LaTeX, PNG, TIFF, JPEG</p>
+        <input type="file" id="file-input" hidden
+               accept=".pdf,.docx,.pptx,.xlsx,.html,.tex,.png,.tiff,.tif,.jpg,.jpeg">
+        <p id="file-name" class="file-name"></p>
+      </div>
+    </div>
+
+    <div id="input-url" style="display:none">
+      <input type="text" id="url-input" placeholder="https://example.com/document.pdf" class="url-input">
+    </div>
+
+    <!-- Options -->
+    <div class="options">
+      <div class="option-group">
+        <label>Pipeline</label>
+        <select id="pipeline">
+          <option value="standard">Standard</option>
+          <option value="vlm">VLM (GPU required)</option>
+        </select>
+      </div>
+      <div class="option-group">
+        <label><input type="checkbox" id="ocr" checked> OCR</label>
+      </div>
+      <div class="option-group">
+        <label>Export format</label>
+        <div class="radio-group">
+          <label><input type="radio" name="format" value="md" checked> MD</label>
+          <label><input type="radio" name="format" value="html"> HTML</label>
+          <label><input type="radio" name="format" value="json"> JSON</label>
+          <label><input type="radio" name="format" value="doctags"> DocTags</label>
+        </div>
+      </div>
+    </div>
+
+    <button id="convert-btn" onclick="startConvert()">Convert</button>
+
+    <!-- Log console -->
+    <div class="console-wrap" id="console-wrap" style="display:none">
+      <div class="console-header">Logs</div>
+      <pre id="log-console" class="console"></pre>
+    </div>
+
+    <!-- Output -->
+    <div id="output-section" style="display:none">
+      <div class="output-header">
+        <span>Output</span>
+        <a id="download-btn" class="btn-download">Download</a>
+      </div>
+      <pre id="output-preview" class="output-preview"></pre>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

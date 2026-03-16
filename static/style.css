@@ -1,0 +1,145 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0d0d0d;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 20px 80px;
+}
+
+h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; }
+.subtitle { color: #666; margin-top: 4px; margin-bottom: 24px; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tab {
+  background: none;
+  border: 1px solid #333;
+  color: #888;
+  padding: 6px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.tab.active { border-color: #555; color: #e0e0e0; background: #1a1a1a; }
+
+.dropzone {
+  border: 1px dashed #333;
+  border-radius: 6px;
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.dropzone:hover, .dropzone.drag-over { border-color: #555; }
+.dropzone p { color: #666; }
+.dropzone .hint { font-size: 12px; margin-top: 6px; }
+.link { color: #7eb8f7; cursor: pointer; text-decoration: underline; }
+.file-name { color: #aaa; margin-top: 8px; font-size: 13px; }
+
+.url-input {
+  width: 100%;
+  background: #111;
+  border: 1px solid #333;
+  color: #e0e0e0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+.url-input:focus { border-color: #555; }
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 20px 0;
+  align-items: flex-end;
+}
+.option-group { display: flex; flex-direction: column; gap: 6px; }
+.option-group label { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.option-group select {
+  background: #111;
+  border: 1px solid #333;
+  color: #e0e0e0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+}
+.radio-group { display: flex; gap: 12px; }
+.radio-group label { color: #ccc; font-size: 13px; text-transform: none; letter-spacing: 0; cursor: pointer; }
+.radio-group input { accent-color: #7eb8f7; }
+#ocr { accent-color: #7eb8f7; }
+
+#convert-btn {
+  background: #1e3a5f;
+  border: 1px solid #2a5080;
+  color: #7eb8f7;
+  padding: 10px 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+#convert-btn:hover:not(:disabled) { background: #254970; }
+#convert-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.console-wrap { margin-top: 24px; border: 1px solid #1e1e1e; border-radius: 6px; overflow: hidden; }
+.console-header { background: #111; color: #555; font-size: 12px; padding: 6px 12px; border-bottom: 1px solid #1e1e1e; }
+.console {
+  background: #0a0a0a;
+  color: #00cc77;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+  padding: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.console .err { color: #ff4444; }
+
+.output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 24px;
+  margin-bottom: 8px;
+  color: #888;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.btn-download {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  color: #7eb8f7;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: none;
+}
+.btn-download:hover { border-color: #555; }
+
+.output-preview {
+  background: #0a0a0a;
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+  padding: 16px;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+  color: #ccc;
+  max-height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
