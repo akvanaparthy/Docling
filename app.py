@@ -110,10 +110,12 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     handler.addFilter(_JobFilter(job_id))  # only capture this thread's logs
     docling_logger = logging.getLogger("docling")
+    docling_logger.setLevel(logging.DEBUG)
     docling_logger.addHandler(handler)
 
     try:
-        from docling.document_converter import DocumentConverter
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PipelineOptions
 
         if pipeline == "vlm":
@@ -125,7 +127,10 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
         else:
             opts = PipelineOptions(do_ocr=ocr)
 
-        converter = DocumentConverter()
+        # Pass opts via format_options — Docling 2.x API (no pipeline_options on constructor)
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
+        )
         result = converter.convert(source)
 
         text = _export_result(result, fmt)
@@ -255,7 +260,8 @@ async def stream(job_id: str):
                     else:
                         yield f"event: done\ndata: {_json.dumps({'format': job['format']})}\n\n"
                     return
-                yield f"event: log\ndata: {msg}\n\n"
+                safe_msg = msg.replace("\n", " ")
+                yield f"event: log\ndata: {safe_msg}\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
 
