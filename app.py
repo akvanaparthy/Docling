@@ -121,7 +121,7 @@ async def convert(
                     cl = resp.headers.get("content-length")
                     if cl and int(cl) > MAX_BYTES:
                         del jobs[job_id]
-                        raise HTTPException(400, f"Remote file exceeds {MAX_UPLOAD_MB}MB limit.")
+                        raise HTTPException(413, f"Remote file exceeds {MAX_UPLOAD_MB}MB limit.")
                     total = 0
                     with open(upload_path, "wb") as f:
                         async for chunk in resp.aiter_bytes(65536):
@@ -129,9 +129,10 @@ async def convert(
                             if total > MAX_BYTES:
                                 upload_path.unlink(missing_ok=True)
                                 del jobs[job_id]
-                                raise HTTPException(400, f"Remote file exceeds {MAX_UPLOAD_MB}MB limit.")
+                                raise HTTPException(413, f"Remote file exceeds {MAX_UPLOAD_MB}MB limit.")
                             f.write(chunk)
         except httpx.TimeoutException:
+            upload_path.unlink(missing_ok=True)
             del jobs[job_id]
             raise HTTPException(400, "URL fetch timed out after 30 seconds.")
         source = str(upload_path)
