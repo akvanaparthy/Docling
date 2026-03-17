@@ -272,3 +272,48 @@ h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; }
 .badge-download { background: #111;    color: #555;    border: 1px solid #2a2a2a; }
 .badge-gpu      { background: #0d2a1a; color: #00cc77; border: 1px solid #1a4a2a; }
 .badge-cpu      { background: #1a1a1a; color: #666;    border: 1px solid #333;    }
+
+/* Report table */
+#report-section { margin-top: 24px; }
+.report-table-wrap {
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+}
+.report-table thead th {
+  background: #111;
+  color: #555;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid #1e1e1e;
+  font-weight: 500;
+}
+.report-table tbody td {
+  padding: 4px 12px;
+  border-bottom: 1px solid #141414;
+  color: #ccc;
+  vertical-align: top;
+}
+.report-table tbody tr:last-child td { border-bottom: none; }
+.report-table tbody td:first-child { color: #888; white-space: nowrap; }
+.report-table tbody td:last-child { word-break: break-word; }
+.report-table .report-section-row td {
+  background: #0d0d0d;
+  color: #555;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 12px 3px;
+  border-bottom: 1px solid #1a1a1a;
+  font-weight: 600;
+}
+.report-table .report-indent td:first-child { padding-left: 24px; }

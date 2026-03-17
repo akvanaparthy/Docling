@@ -80,8 +80,281 @@ VLM_PRESETS = {
 _thread_local = threading.local()  # stores current job_id per worker thread
 
 
+def _build_report(doc) -> dict:
+    """Extract all countable metadata from a DoclingDocument."""
+    from collections import Counter
+
+    report = {}
+
+    # --- Document overview ---
+    overview = {}
+    if doc.origin:
+        overview["filename"] = doc.origin.filename or "—"
+        overview["mimetype"] = doc.origin.mimetype or "—"
+    overview["pages"] = len(doc.pages) if doc.pages else 0
+    # Page dimensions
+    if doc.pages:
+        sizes = set()
+        for p in doc.pages.values():
+            if p.size:
+                sizes.add(f"{p.size.width:.0f}×{p.size.height:.0f}")
+        overview["page_dimensions"] = ", ".join(sorted(sizes)) if sizes else "—"
+        # Pages with rendered image
+        pages_with_image = sum(1 for p in doc.pages.values() if p.image is not None)
+        if pages_with_image:
+            overview["pages_with_image"] = pages_with_image
+    report["overview"] = overview
+
+    # --- Collect all elements for counting ---
+    all_items = []  # (label_str, item)
+    label_counts = Counter()
+
+    for t in doc.texts:
+        lbl = t.label.value if hasattr(t.label, 'value') else str(t.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, t))
+    for p in doc.pictures:
+        lbl = p.label.value if hasattr(p.label, 'value') else str(p.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, p))
+    for tb in doc.tables:
+        lbl = tb.label.value if hasattr(tb.label, 'value') else str(tb.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, tb))
+    for kv in doc.key_value_items:
+        lbl = kv.label.value if hasattr(kv.label, 'value') else str(kv.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, kv))
+    for fi in doc.form_items:
+        lbl = fi.label.value if hasattr(fi.label, 'value') else str(fi.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, fi))
+    for fr in getattr(doc, 'field_regions', []):
+        lbl = fr.label.value if hasattr(fr.label, 'value') else str(fr.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, fr))
+    for fitem in getattr(doc, 'field_items', []):
+        lbl = fitem.label.value if hasattr(fitem.label, 'value') else str(fitem.label)
+        label_counts[lbl] += 1
+        all_items.append((lbl, fitem))
+
+    total_elements = len(all_items)
+    report["total_elements"] = total_elements
+
+    # Elements by label (sorted by count desc, only non-zero)
+    report["elements_by_label"] = dict(label_counts.most_common())
+
+    # --- Structure ---
+    structure = {}
+    with_bbox = 0
+    with_parent = 0
+    parent_ids = set()
+    content_layers = Counter()
+    for _lbl, item in all_items:
+        if hasattr(item, 'prov') and item.prov:
+            for pv in item.prov:
+                if pv.bbox:
+                    with_bbox += 1
+                    break
+        if hasattr(item, 'parent') and item.parent:
+            with_parent += 1
+            parent_ids.add(item.parent.cref if hasattr(item.parent, 'cref') else str(item.parent))
+        if hasattr(item, 'content_layer') and item.content_layer:
+            cl = item.content_layer.value if hasattr(item.content_layer, 'value') else str(item.content_layer)
+            content_layers[cl] += 1
+
+    structure["with_bbox"] = f"{with_bbox} / {total_elements}"
+    structure["with_parent"] = f"{with_parent} / {total_elements}"
+    structure["unique_parents"] = len(parent_ids)
+    if content_layers:
+        structure["content_layers"] = dict(content_layers.most_common())
+    # Groups
+    if doc.groups:
+        group_labels = Counter()
+        for g in doc.groups:
+            gl = g.label.value if hasattr(g.label, 'value') else str(g.label)
+            group_labels[gl] += 1
+        structure["groups"] = dict(group_labels.most_common())
+        structure["groups_total"] = len(doc.groups)
+    report["structure"] = structure
+
+    # --- Section header levels ---
+    level_counts = Counter()
+    for t in doc.texts:
+        lbl = t.label.value if hasattr(t.label, 'value') else str(t.label)
+        if lbl == "section_header" and hasattr(t, 'level'):
+            level_counts[f"L{t.level}"] += 1
+    if level_counts:
+        report["heading_levels"] = dict(sorted(level_counts.items()))
+
+    # --- Text formatting ---
+    fmt_counts = {"bold": 0, "italic": 0, "underline": 0, "strikethrough": 0, "hyperlinks": 0}
+    for t in doc.texts:
+        if hasattr(t, 'formatting') and t.formatting:
+            if t.formatting.bold: fmt_counts["bold"] += 1
+            if t.formatting.italic: fmt_counts["italic"] += 1
+            if t.formatting.underline: fmt_counts["underline"] += 1
+            if t.formatting.strikethrough: fmt_counts["strikethrough"] += 1
+        if hasattr(t, 'hyperlink') and t.hyperlink:
+            fmt_counts["hyperlinks"] += 1
+    # Only include non-zero
+    fmt_counts = {k: v for k, v in fmt_counts.items() if v > 0}
+    if fmt_counts:
+        report["text_formatting"] = fmt_counts
+
+    # --- List items ---
+    enum_count = 0
+    bullet_count = 0
+    for t in doc.texts:
+        lbl = t.label.value if hasattr(t.label, 'value') else str(t.label)
+        if lbl == "list_item" and hasattr(t, 'enumerated'):
+            if t.enumerated:
+                enum_count += 1
+            else:
+                bullet_count += 1
+    if enum_count or bullet_count:
+        report["list_items"] = {"enumerated": enum_count, "bulleted": bullet_count}
+
+    # --- Tables detail ---
+    if doc.tables:
+        total_cells = 0
+        header_cells = 0
+        row_header_cells = 0
+        merged_cells = 0
+        fillable_cells = 0
+        table_sizes = []
+        tables_with_caption = 0
+        for tb in doc.tables:
+            if hasattr(tb, 'captions') and tb.captions:
+                tables_with_caption += 1
+            if tb.data:
+                table_sizes.append((tb.data.num_rows, tb.data.num_cols))
+                for cell in tb.data.table_cells:
+                    total_cells += 1
+                    if cell.column_header:
+                        header_cells += 1
+                    if cell.row_header:
+                        row_header_cells += 1
+                    if cell.row_span > 1 or cell.col_span > 1:
+                        merged_cells += 1
+                    if cell.fillable:
+                        fillable_cells += 1
+        td = {"total_cells": total_cells}
+        if header_cells: td["column_header_cells"] = header_cells
+        if row_header_cells: td["row_header_cells"] = row_header_cells
+        if merged_cells: td["merged_cells"] = merged_cells
+        if fillable_cells: td["fillable_cells"] = fillable_cells
+        if tables_with_caption: td["with_caption"] = tables_with_caption
+        if table_sizes:
+            avg_r = sum(r for r, c in table_sizes) / len(table_sizes)
+            avg_c = sum(c for r, c in table_sizes) / len(table_sizes)
+            td["avg_size"] = f"{avg_r:.1f}×{avg_c:.1f}"
+        report["tables_detail"] = td
+
+    # --- Pictures detail ---
+    if doc.pictures:
+        pd = {}
+        with_image = sum(1 for p in doc.pictures if p.image is not None)
+        with_caption = sum(1 for p in doc.pictures if hasattr(p, 'captions') and p.captions)
+        with_desc = 0
+        with_classification = 0
+        class_labels = Counter()
+        for p in doc.pictures:
+            if hasattr(p, 'meta') and p.meta:
+                if hasattr(p.meta, 'description') and p.meta.description:
+                    with_desc += 1
+                if hasattr(p.meta, 'classification') and p.meta.classification:
+                    with_classification += 1
+                    for pred in p.meta.classification.predictions:
+                        class_labels[pred.class_name] += 1
+        pd["with_image"] = f"{with_image} / {len(doc.pictures)}"
+        if with_caption: pd["with_caption"] = with_caption
+        if with_desc: pd["with_description"] = with_desc
+        if with_classification: pd["with_classification"] = with_classification
+        if class_labels:
+            pd["classification_labels"] = dict(class_labels.most_common())
+        report["pictures_detail"] = pd
+
+    # --- Code languages ---
+    code_langs = Counter()
+    for t in doc.texts:
+        lbl = t.label.value if hasattr(t.label, 'value') else str(t.label)
+        if lbl == "code" and hasattr(t, 'code_language') and t.code_language:
+            cl = t.code_language.value if hasattr(t.code_language, 'value') else str(t.code_language)
+            code_langs[cl] += 1
+    if code_langs:
+        report["code_languages"] = dict(code_langs.most_common())
+
+    # --- Forms / Key-value ---
+    if doc.key_value_items:
+        total_kv_cells = sum(len(kv.graph.cells) for kv in doc.key_value_items if kv.graph)
+        report["key_value_detail"] = {"regions": len(doc.key_value_items), "cells": total_kv_cells}
+    if doc.form_items:
+        total_form_cells = sum(len(f.graph.cells) for f in doc.form_items if f.graph)
+        report["form_detail"] = {"forms": len(doc.form_items), "cells": total_form_cells}
+
+    # --- Pages coverage ---
+    pages_with_content = Counter()
+    for _lbl, item in all_items:
+        if hasattr(item, 'prov') and item.prov:
+            for pv in item.prov:
+                pages_with_content[pv.page_no] += 1
+    if pages_with_content:
+        total_pages = len(doc.pages) if doc.pages else 0
+        avg_per_page = total_elements / total_pages if total_pages else 0
+        report["pages_coverage"] = {
+            "pages_with_content": f"{len(pages_with_content)} / {total_pages}",
+            "avg_elements_per_page": round(avg_per_page, 1),
+        }
+
+    return report
+
+
+def _reorder_body_children(doc) -> None:
+    """Sort body.children in-place by (page ASC, t DESC, l ASC).
+
+    Coords are BOTTOMLEFT origin: higher t = higher on page = comes first.
+    Groups are atomic units — positioned by their first leaf element's bbox.
+    Recurses through nested groups to find the first prov-bearing element.
+    """
+    ref_map = {}
+    for lst in [doc.texts, doc.tables, doc.pictures,
+                doc.key_value_items, doc.form_items,
+                getattr(doc, 'field_items', []), getattr(doc, 'field_regions', [])]:
+        for item in lst:
+            if hasattr(item, 'self_ref'):
+                ref_map[item.self_ref] = item
+    for g in doc.groups:
+        ref_map[g.self_ref] = g
+
+    def first_prov(cref: str):
+        item = ref_map.get(cref)
+        if item is None:
+            return None
+        if hasattr(item, 'prov') and item.prov:
+            return item.prov[0]
+        if hasattr(item, 'children') and item.children:
+            return first_prov(item.children[0].cref)
+        return None
+
+    def sort_key(child):
+        prov = first_prov(child.cref)
+        if prov is None:
+            return (float('inf'), 0.0, 0.0)
+        page = prov.page_no if prov.page_no is not None else float('inf')
+        bbox = prov.bbox
+        t = bbox.t if bbox else 0.0
+        l = bbox.l if bbox else 0.0
+        return (page, -t, l)  # page asc, top-to-bottom (-t asc), left-to-right (l asc)
+
+    doc.body.children.sort(key=sort_key)
+
+
 def _export_result(result, fmt: str) -> str:
-    doc = result.document
+    return _export_result_from_doc(result.document, fmt)
+
+
+def _export_result_from_doc(doc, fmt: str) -> str:
     if fmt == "md":
         return doc.export_to_markdown()
     elif fmt == "html":
@@ -128,7 +401,8 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                     do_picture_description: bool = False, pic_desc_model: str = "smolvlm",
                     vlm_model: str = "GRANITEDOCLING",
                     do_chunk: bool = False, chunk_max_tokens: int = 256,
-                    page_from: int = 1, page_to: int = 0, pdf_backend: str = "docling"):
+                    page_from: int = 1, page_to: int = 0, pdf_backend: str = "docling",
+                    queue_max_size: int = 100, batch_size: int = 0, reorder: bool = True):
     import time, json as _json2
     _thread_local.job_id = job_id
     job = jobs[job_id]
@@ -147,6 +421,9 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
 
     def send_info(data: dict):
         job["queue"].put(f"__INFO__:{_json2.dumps(data)}")
+
+    def send_report(data: dict):
+        job["queue"].put(f"__REPORT__:{_json2.dumps(data)}")
 
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -189,7 +466,7 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                 )
             except ImportError:
                 pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
-                opts = PdfPipelineOptions(do_ocr=ocr, **pic_opts)
+                opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size, **pic_opts)
                 send_info({"pipeline": "standard", "model": None, "device": device,
                            "do_picture_description": do_picture_description, "ocr": ocr,
                            "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None})
@@ -198,7 +475,7 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                 )
         else:
             pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
-            opts = PdfPipelineOptions(do_ocr=ocr, **pic_opts)
+            opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size, **pic_opts)
             send_info({"pipeline": "standard", "model": None, "device": device,
                        "do_picture_description": do_picture_description, "ocr": ocr,
                        "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None})
@@ -207,34 +484,52 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             )
         send_timing({"stage": "pipeline_init", "duration": round(time.perf_counter() - t0, 2)})
 
-        import sys as _sys
-        p_range = (page_from, page_to if page_to > 0 else _sys.maxsize)
-        t0 = time.perf_counter()
-        result = converter.convert(source, page_range=p_range)
-        conversion_time = round(time.perf_counter() - t0, 2)
+        # Determine if we should use batched conversion
+        is_pdf = source.lower().endswith(".pdf")
+        use_batching = is_pdf and batch_size > 0
 
-        # Extract Docling's built-in per-stage profiling data
-        timings = {}
-        for key, item in (result.timings or {}).items():
-            timings[key] = {
-                "total": round(item.total(), 2),
-                "avg": round(float(item.avg()), 2) if item.count > 0 else 0,
-                "count": item.count,
-                "scope": item.scope.value,
-            }
+        if use_batching:
+            text, page_count, all_timings, all_docs = _run_batched_conversion(
+                source, converter, fmt, batch_size, page_from, page_to,
+                send_timing, job, do_chunk, send_report, reorder=reorder
+            )
+        else:
+            import sys as _sys
+            p_range = (page_from, page_to if page_to > 0 else _sys.maxsize)
+            t0 = time.perf_counter()
+            result = converter.convert(source, page_range=p_range)
+            conversion_time = round(time.perf_counter() - t0, 2)
 
-        page_count = len(result.document.pages) if result.document.pages else 0
-        job["page_count"] = page_count
-        send_timing({
-            "stage": "conversion_done",
-            "duration": conversion_time,
-            "page_count": page_count,
-            "timings": timings,
-        })
+            timings = {}
+            for key, item in (result.timings or {}).items():
+                timings[key] = {
+                    "total": round(item.total(), 2),
+                    "avg": round(float(item.avg()), 2) if item.count > 0 else 0,
+                    "count": item.count,
+                    "scope": item.scope.value,
+                }
 
-        t0 = time.perf_counter()
-        text = _export_result(result, fmt)
-        send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
+            page_count = len(result.document.pages) if result.document.pages else 0
+            job["page_count"] = page_count
+            send_timing({
+                "stage": "conversion_done",
+                "duration": conversion_time,
+                "page_count": page_count,
+                "timings": timings,
+            })
+
+            try:
+                report = _build_report(result.document)
+                send_report(report)
+            except Exception:
+                pass  # report is non-critical
+
+            t0 = time.perf_counter()
+            if reorder:
+                _reorder_body_children(result.document)
+            text = _export_result(result, fmt)
+            send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
+            all_docs = [result.document] if do_chunk else []
 
         out_dir = OUTPUTS / job_id
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -249,21 +544,23 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             chunker = HybridChunker(max_tokens=chunk_max_tokens)
             chunks_display = []
             chunks_full = []
-            for i, chunk in enumerate(chunker.chunk(result.document)):
-                page = None
-                if chunk.meta.doc_items:
-                    prov = getattr(chunk.meta.doc_items[0], 'prov', None)
-                    if prov:
-                        page = prov[0].page_no
-                chunks_display.append({
-                    "index": i,
-                    "text": chunk.text,
-                    "headings": chunk.meta.headings or [],
-                    "page": page,
-                })
-                chunks_full.append(chunk.model_dump(mode='json'))
+            chunk_idx = 0
+            for doc in all_docs:
+                for chunk in chunker.chunk(doc):
+                    page = None
+                    if chunk.meta.doc_items:
+                        prov = getattr(chunk.meta.doc_items[0], 'prov', None)
+                        if prov:
+                            page = prov[0].page_no
+                    chunks_display.append({
+                        "index": chunk_idx,
+                        "text": chunk.text,
+                        "headings": chunk.meta.headings or [],
+                        "page": page,
+                    })
+                    chunks_full.append(chunk.model_dump(mode='json'))
+                    chunk_idx += 1
             job["chunks"] = chunks_display
-            # write full chunks to file for download
             chunks_path = out_dir / "chunks.json"
             chunks_path.write_text(_json3.dumps(chunks_full, indent=2), encoding="utf-8")
             job["chunks_path"] = chunks_path
@@ -279,6 +576,104 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
     finally:
         docling_logger.removeHandler(handler)
         job["queue"].put(None)  # sentinel
+
+
+def _run_batched_conversion(source, converter, fmt, batch_size, page_from, page_to,
+                            send_timing, job, do_chunk, send_report=None, reorder=True):
+    """Split PDF into batches using pypdfium2, convert each as a separate document.
+
+    For JSON format and chunking, uses DoclingDocument.concatenate() to merge
+    batch documents with correct page numbers and internal references.
+    For MD/HTML/DocTags, concatenates exported text strings directly.
+    """
+    import time
+    from io import BytesIO
+    import pypdfium2 as pdfium
+    from docling.datamodel.document import DocumentStream, DoclingDocument
+
+    src_pdf = pdfium.PdfDocument(source)
+    total_pages = len(src_pdf)
+
+    # Apply user page range
+    effective_from = max(page_from, 1) - 1  # 0-indexed
+    effective_to = min(page_to, total_pages) if page_to > 0 else total_pages
+    pages_to_process = list(range(effective_from, effective_to))
+
+    # We need the full document for JSON export and chunking
+    need_merged_doc = fmt == "json" or do_chunk
+
+    texts = []
+    batch_docs = []
+    total_page_count = 0
+    t0_all = time.perf_counter()
+
+    for batch_start in range(0, len(pages_to_process), batch_size):
+        batch_pages = pages_to_process[batch_start:batch_start + batch_size]
+        batch_num = batch_start // batch_size + 1
+        real_from = batch_pages[0] + 1  # back to 1-indexed for display
+        real_to = batch_pages[-1] + 1
+
+        job["queue"].put(f"__INFO_BATCH__:Processing batch {batch_num}: pages {real_from}-{real_to}")
+
+        # Create a sub-PDF with just these pages
+        new_pdf = pdfium.PdfDocument.new()
+        new_pdf.import_pages(src_pdf, batch_pages)
+        buf = BytesIO()
+        new_pdf.save(buf)
+        new_pdf.close()
+        buf.seek(0)
+
+        stream = DocumentStream(name=f"batch_{real_from}_{real_to}.pdf", stream=buf)
+
+        t0 = time.perf_counter()
+        result = converter.convert(stream)
+        batch_time = round(time.perf_counter() - t0, 2)
+
+        batch_page_count = len(result.document.pages) if result.document.pages else 0
+        total_page_count += batch_page_count
+
+        send_timing({
+            "stage": "conversion_done",
+            "duration": batch_time,
+            "page_count": batch_page_count,
+            "batch": f"{real_from}-{real_to}",
+            "timings": {},
+        })
+
+        if need_merged_doc:
+            batch_docs.append(result.document)
+        else:
+            if reorder:
+                _reorder_body_children(result.document)
+            texts.append(_export_result(result, fmt))
+
+    src_pdf.close()
+    job["page_count"] = total_page_count
+
+    t0 = time.perf_counter()
+    if need_merged_doc and batch_docs:
+        # Merge all batch documents into one with correct page numbers and refs
+        merged_doc = DoclingDocument.concatenate(batch_docs)
+        if reorder:
+            _reorder_body_children(merged_doc)
+        text = _export_result_from_doc(merged_doc, fmt)
+        all_docs = [merged_doc]
+    else:
+        separator = "\n\n" if fmt in ("md", "doctags") else "\n"
+        text = separator.join(texts)
+        all_docs = []
+    send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
+
+    # Build report from merged doc or first batch
+    if send_report:
+        try:
+            report_doc = all_docs[0] if all_docs else (batch_docs[0] if batch_docs else None)
+            if report_doc:
+                send_report(_build_report(report_doc))
+        except Exception:
+            pass
+
+    return text, total_page_count, {}, all_docs
 
 
 def torch_cuda_available() -> bool:
@@ -333,6 +728,9 @@ async def convert(
     page_from: int = Form(default=1),
     page_to: int = Form(default=0),
     pdf_backend: str = Form(default="docling"),
+    queue_max_size: int = Form(default=100),
+    batch_size: int = Form(default=0),
+    reorder: bool = Form(default=True),
 ):
     # Validate input
     if file is None and not url:
@@ -381,7 +779,7 @@ async def convert(
             raise HTTPException(400, "URL fetch timed out after 30 seconds.")
         source = str(upload_path)
 
-    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend)
+    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder)
     return {"job_id": job_id}
 
 
@@ -420,6 +818,10 @@ async def stream(job_id: str):
                     yield f"event: timing\ndata: {safe_msg[11:]}\n\n"
                 elif safe_msg.startswith("__INFO__:"):
                     yield f"event: info\ndata: {safe_msg[9:]}\n\n"
+                elif safe_msg.startswith("__REPORT__:"):
+                    yield f"event: report\ndata: {safe_msg[11:]}\n\n"
+                elif safe_msg.startswith("__INFO_BATCH__:"):
+                    yield f"event: log\ndata: {safe_msg[15:]}\n\n"
                 else:
                     yield f"event: log\ndata: {safe_msg}\n\n"
 

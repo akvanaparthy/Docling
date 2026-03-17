@@ -306,6 +306,165 @@ function handleTiming(data) {
   }
 }
 
+// Report table builder
+function handleReport(data) {
+  const body = document.getElementById('report-body');
+  body.innerHTML = '';
+
+  function sectionRow(title) {
+    const tr = document.createElement('tr');
+    tr.className = 'report-section-row';
+    tr.innerHTML = `<td colspan="2">${title}</td>`;
+    body.appendChild(tr);
+  }
+
+  function row(field, value, indent) {
+    const tr = document.createElement('tr');
+    if (indent) tr.className = 'report-indent';
+    tr.innerHTML = `<td>${field}</td><td>${value}</td>`;
+    body.appendChild(tr);
+  }
+
+  // Overview
+  const ov = data.overview || {};
+  sectionRow('Document');
+  if (ov.filename) row('Filename', ov.filename);
+  if (ov.mimetype) row('MIME type', ov.mimetype);
+  if (ov.pages != null) row('Pages', ov.pages);
+  if (ov.page_dimensions) row('Page dimensions', ov.page_dimensions);
+  if (ov.pages_with_image) row('Pages with image', ov.pages_with_image);
+  if (data.total_elements != null) row('Total elements', data.total_elements);
+
+  // Elements by label
+  const labels = data.elements_by_label || {};
+  if (Object.keys(labels).length) {
+    sectionRow('Elements by type');
+    for (const [lbl, cnt] of Object.entries(labels)) {
+      row(lbl, cnt, true);
+    }
+  }
+
+  // Heading levels
+  if (data.heading_levels) {
+    sectionRow('Heading levels');
+    for (const [lv, cnt] of Object.entries(data.heading_levels)) {
+      row(lv, cnt, true);
+    }
+  }
+
+  // List items
+  if (data.list_items) {
+    sectionRow('List items');
+    if (data.list_items.enumerated) row('Enumerated', data.list_items.enumerated, true);
+    if (data.list_items.bulleted) row('Bulleted', data.list_items.bulleted, true);
+  }
+
+  // Tables detail
+  if (data.tables_detail) {
+    const td = data.tables_detail;
+    sectionRow('Tables');
+    row('Total cells', td.total_cells, true);
+    if (td.column_header_cells) row('Column header cells', td.column_header_cells, true);
+    if (td.row_header_cells) row('Row header cells', td.row_header_cells, true);
+    if (td.merged_cells) row('Merged cells', td.merged_cells, true);
+    if (td.fillable_cells) row('Fillable cells', td.fillable_cells, true);
+    if (td.with_caption) row('With caption', td.with_caption, true);
+    if (td.avg_size) row('Avg size', td.avg_size, true);
+  }
+
+  // Pictures detail
+  if (data.pictures_detail) {
+    const pd = data.pictures_detail;
+    sectionRow('Pictures');
+    row('With image data', pd.with_image, true);
+    if (pd.with_caption) row('With caption', pd.with_caption, true);
+    if (pd.with_description) row('With description', pd.with_description, true);
+    if (pd.with_classification) row('With classification', pd.with_classification, true);
+    if (pd.classification_labels) {
+      for (const [cls, cnt] of Object.entries(pd.classification_labels)) {
+        row('  ' + cls, cnt, true);
+      }
+    }
+  }
+
+  // Code languages
+  if (data.code_languages) {
+    sectionRow('Code blocks');
+    for (const [lang, cnt] of Object.entries(data.code_languages)) {
+      row(lang, cnt, true);
+    }
+  }
+
+  // Text formatting
+  if (data.text_formatting) {
+    sectionRow('Text formatting');
+    for (const [fmt, cnt] of Object.entries(data.text_formatting)) {
+      row(fmt, cnt, true);
+    }
+  }
+
+  // Structure
+  const st = data.structure || {};
+  if (Object.keys(st).length) {
+    sectionRow('Structure');
+    if (st.with_bbox) row('With bounding box', st.with_bbox, true);
+    if (st.with_parent) row('With parent ref', st.with_parent, true);
+    if (st.unique_parents != null) row('Unique parents', st.unique_parents, true);
+    if (st.content_layers) {
+      for (const [cl, cnt] of Object.entries(st.content_layers)) {
+        row('Layer: ' + cl, cnt, true);
+      }
+    }
+    if (st.groups_total) row('Groups', st.groups_total, true);
+    if (st.groups) {
+      for (const [gl, cnt] of Object.entries(st.groups)) {
+        row('  ' + gl, cnt, true);
+      }
+    }
+  }
+
+  // Key-value / forms
+  if (data.key_value_detail) {
+    sectionRow('Key-Value regions');
+    row('Regions', data.key_value_detail.regions, true);
+    row('Cells', data.key_value_detail.cells, true);
+  }
+  if (data.form_detail) {
+    sectionRow('Forms');
+    row('Forms', data.form_detail.forms, true);
+    row('Cells', data.form_detail.cells, true);
+  }
+
+  // Pages coverage
+  if (data.pages_coverage) {
+    sectionRow('Pages coverage');
+    row('Pages with content', data.pages_coverage.pages_with_content, true);
+    row('Avg elements/page', data.pages_coverage.avg_elements_per_page, true);
+  }
+
+  document.getElementById('report-section').style.display = '';
+}
+
+function copyReport() {
+  const table = document.getElementById('report-table');
+  const rows = table.querySelectorAll('tr');
+  const lines = [];
+  rows.forEach(tr => {
+    const cells = tr.querySelectorAll('th, td');
+    if (cells.length === 1) {
+      // section header
+      lines.push('\n' + cells[0].textContent.trim());
+    } else if (cells.length === 2) {
+      lines.push(cells[0].textContent.trim() + '\t' + cells[1].textContent.trim());
+    }
+  });
+  const text = lines.join('\n').trim();
+  const btn = document.getElementById('report-copy-btn');
+  navigator.clipboard.writeText(text)
+    .then(() => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); })
+    .catch(() => {});
+}
+
 // Main convert
 async function startConvert() {
   if (activeSource) { activeSource.close(); activeSource = null; }
@@ -320,6 +479,8 @@ async function startConvert() {
   document.getElementById('job-info-rows').innerHTML = '';
   document.getElementById('chunks-section').style.display = 'none';
   document.getElementById('chunks-list').innerHTML = '';
+  document.getElementById('report-section').style.display = 'none';
+  document.getElementById('report-body').innerHTML = '';
   _chunksData = [];
   _lastPageCount = 0;
   document.getElementById('content-row').style.display = 'flex';
@@ -343,6 +504,9 @@ async function startConvert() {
   fd.append('page_to', document.getElementById('page-to').value || 0);
   fd.append('do_chunk', document.getElementById('do-chunk').checked);
   fd.append('chunk_max_tokens', document.getElementById('chunk-max-tokens').value);
+  fd.append('queue_max_size', document.getElementById('queue-max-size').value);
+  fd.append('batch_size', document.getElementById('batch-size').value);
+  fd.append('reorder', document.getElementById('reorder').checked);
 
   if (currentTab === 'file') {
     if (!selectedFile) { appendLog('ERROR: No file selected.', 'err'); btn.disabled = false; return; }
@@ -387,6 +551,10 @@ async function startConvert() {
 
   es.addEventListener('info', e => {
     try { handleInfo(JSON.parse(e.data)); } catch (_) {}
+  });
+
+  es.addEventListener('report', e => {
+    try { handleReport(JSON.parse(e.data)); } catch (_) {}
   });
 
   es.addEventListener('done', async () => {
