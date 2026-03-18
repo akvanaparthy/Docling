@@ -1,9 +1,12 @@
-let selectedFile = null;
+let selectedFiles = [];
 let activeSource = null;
 let currentTab = 'file';
 let elapsedTimer = null;
 let jobStartTime = null;
 let modelStatus = {};
+let isMultiFile = false;
+let multiFileReports = {};  // file_index -> report
+let selectedFileIndex = 0;  // which file is selected in multi-file view
 
 const VLM_PRESET_LIST = [
   { key: 'GRANITEDOCLING', label: 'Granite-Docling-258M',  note: '258M · DocTags' },
@@ -76,6 +79,13 @@ function updateChunkSection() {
   document.getElementById('chunk-tokens-group').style.display = checked ? '' : 'none';
 }
 
+function updateMultiFileOptions() {
+  const isMulti = selectedFiles.length > 1;
+  // Hide page range and batch size for multi-file
+  document.getElementById('pages-group').style.display = isMulti ? 'none' : '';
+  document.getElementById('batch-size-group').style.display = isMulti ? 'none' : '';
+}
+
 let _chunksData = [];
 let _lastPageCount = 0;
 
@@ -89,24 +99,43 @@ async function fetchAndRenderChunks(jobId) {
     const dlBtn = document.getElementById('chunks-download-btn');
     dlBtn.href = `/chunks/${jobId}/download`;
     dlBtn.download = 'chunks.json';
-    const list = document.getElementById('chunks-list');
-    list.innerHTML = '';
-    data.chunks.forEach(c => {
-      const card = document.createElement('div');
-      card.className = 'chunk-card';
-      const headings = c.headings.length ? c.headings.join(' › ') : '';
-      card.innerHTML = `
-        <div class="chunk-meta">
-          <span class="chunk-idx">#${c.index + 1}</span>
-          ${c.page != null ? `<span class="chunk-page">p.${c.page}</span>` : ''}
-          ${headings ? `<span class="chunk-headings">${headings}</span>` : ''}
-        </div>
-        <div class="chunk-text">${c.text.replace(/</g, '&lt;')}</div>
-      `;
-      list.appendChild(card);
-    });
+    renderChunksList(data.chunks);
     document.getElementById('chunks-section').style.display = '';
   } catch (_) {}
+}
+
+async function fetchAndRenderChunksForFile(jobId, fileIndex) {
+  try {
+    const r = await fetch(`/chunks/${jobId}/${fileIndex}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    _chunksData = data.chunks;
+    document.getElementById('chunk-count').textContent = `(${data.count})`;
+    const dlBtn = document.getElementById('chunks-download-btn');
+    dlBtn.href = `/chunks/${jobId}/${fileIndex}/download`;
+    dlBtn.download = `${data.name || 'chunks'}_chunks.json`;
+    renderChunksList(data.chunks);
+    document.getElementById('chunks-section').style.display = '';
+  } catch (_) {}
+}
+
+function renderChunksList(chunks) {
+  const list = document.getElementById('chunks-list');
+  list.innerHTML = '';
+  chunks.forEach(c => {
+    const card = document.createElement('div');
+    card.className = 'chunk-card';
+    const headings = c.headings.length ? c.headings.join(' > ') : '';
+    card.innerHTML = `
+      <div class="chunk-meta">
+        <span class="chunk-idx">#${c.index + 1}</span>
+        ${c.page != null ? `<span class="chunk-page">p.${c.page}</span>` : ''}
+        ${headings ? `<span class="chunk-headings">${headings}</span>` : ''}
+      </div>
+      <div class="chunk-text">${c.text.replace(/</g, '&lt;')}</div>
+    `;
+    list.appendChild(card);
+  });
 }
 
 function copyChunks() {
@@ -141,11 +170,25 @@ function handleInfo(data) {
     rows.appendChild(pRow);
   }
 
+  if (data.gemini_enrich) {
+    const gRow = document.createElement('div');
+    gRow.className = 't-row';
+    gRow.innerHTML = `<span class="t-label">Gemini</span><span class="badge badge-ready">enabled</span>`;
+    rows.appendChild(gRow);
+  }
+
+  if (data.multi) {
+    const fRow = document.createElement('div');
+    fRow.className = 't-row';
+    fRow.innerHTML = `<span class="t-label">Files</span><span class="t-val">${data.file_count} (${data.doc_concurrency}x parallel)</span>`;
+    rows.appendChild(fRow);
+  }
+
   const pgRow = document.createElement('div');
   pgRow.className = 't-row';
   pgRow.id = 'page-progress-row';
   pgRow.style.display = 'none';
-  pgRow.innerHTML = `<span class="t-label">Page</span><span class="t-val" id="page-progress">—</span>`;
+  pgRow.innerHTML = `<span class="t-label">Page</span><span class="t-val" id="page-progress">-</span>`;
   rows.appendChild(pgRow);
 }
 
@@ -182,13 +225,55 @@ dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-ove
 dropzone.addEventListener('drop', e => {
   e.preventDefault();
   dropzone.classList.remove('drag-over');
-  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length > 0) setFiles(Array.from(e.dataTransfer.files));
 });
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length > 0) setFiles(Array.from(fileInput.files));
+});
 
-function setFile(f) {
-  selectedFile = f;
-  document.getElementById('file-name').textContent = f.name;
+function setFiles(newFiles) {
+  // Append to existing or replace
+  selectedFiles = newFiles.slice(0, 20);
+  if (selectedFiles.length === 1) {
+    document.getElementById('file-name').textContent = selectedFiles[0].name;
+    document.getElementById('file-list').style.display = 'none';
+  } else {
+    document.getElementById('file-name').textContent = `${selectedFiles.length} files selected`;
+    renderFileList();
+  }
+  updateMultiFileOptions();
+}
+
+function renderFileList() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = '';
+  el.style.display = '';
+  selectedFiles.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'file-list-item';
+    const sizeKb = (f.size / 1024).toFixed(0);
+    item.innerHTML = `
+      <span class="file-list-name">${f.name}</span>
+      <span class="file-list-size">${sizeKb} KB</span>
+      <button class="file-list-remove" onclick="removeFile(${i})" title="Remove">&times;</button>
+    `;
+    el.appendChild(item);
+  });
+}
+
+function removeFile(index) {
+  selectedFiles.splice(index, 1);
+  if (selectedFiles.length === 0) {
+    document.getElementById('file-name').textContent = '';
+    document.getElementById('file-list').style.display = 'none';
+  } else if (selectedFiles.length === 1) {
+    document.getElementById('file-name').textContent = selectedFiles[0].name;
+    document.getElementById('file-list').style.display = 'none';
+  } else {
+    document.getElementById('file-name').textContent = `${selectedFiles.length} files selected`;
+    renderFileList();
+  }
+  updateMultiFileOptions();
 }
 
 // Console helpers
@@ -201,12 +286,19 @@ function appendLog(text, cls) {
   el.scrollTop = el.scrollHeight;
 }
 
+function downloadPrompts() {
+  if (!currentJobId) return;
+  const a = document.createElement('a');
+  a.href = `/prompts/${currentJobId}/download`;
+  a.download = 'prompts.json';
+  a.click();
+}
+
 function copyOutput() {
   const text = document.getElementById('output-preview').textContent;
   const btn = document.getElementById('copy-btn');
   const done = () => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); };
   const fail = () => {
-    // fallback: select text and execCommand
     const el = document.getElementById('output-preview');
     const sel = window.getSelection();
     const range = document.createRange();
@@ -226,6 +318,21 @@ function copyOutput() {
 
 function clearConsole() {
   document.getElementById('log-console').innerHTML = '';
+}
+
+function appendGeminiLog(msg) {
+  const el = document.getElementById('gemini-console');
+  if (!el) return;
+  const line = document.createElement('div');
+  line.textContent = msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function updateGeminiSection() {
+  const checked = document.getElementById('gemini-enrich').checked;
+  const wrap = document.getElementById('gemini-console-wrap');
+  if (wrap) wrap.style.display = checked ? '' : 'none';
 }
 
 // Timing panel helpers
@@ -259,16 +366,20 @@ function addTimingRow(label, value, cls) {
 }
 
 function handleTiming(data) {
-  const rows = document.getElementById('timing-rows');
   const s = data.stage;
+  const filePrefix = data.file_name ? `[${data.file_name}] ` : '';
 
   if (s === 'pipeline_init') {
     addTimingRow('Pipeline init', data.duration + 's');
 
   } else if (s === 'conversion_done') {
     _lastPageCount = data.page_count || 0;
-    addTimingRow('Pages', data.page_count || '—', 't-section');
-    addTimingRow('Conversion', data.duration + 's');
+    if (filePrefix) {
+      addTimingRow(filePrefix + 'Pages', data.page_count || '-', 't-section');
+    } else {
+      addTimingRow('Pages', data.page_count || '-', 't-section');
+    }
+    addTimingRow(filePrefix + 'Conversion', data.duration + 's');
 
     const t = data.timings || {};
 
@@ -282,6 +393,22 @@ function handleTiming(data) {
       addTimingRow('  Total', t.ocr.total + 's');
       if (t.ocr.count > 1) addTimingRow('  Avg/page', t.ocr.avg + 's');
     }
+    if (t.table_structure) {
+      addTimingRow('Table structure', '', 't-section');
+      addTimingRow('  Total', t.table_structure.total + 's');
+      if (t.table_structure.count > 1) addTimingRow('  Avg', t.table_structure.avg + 's');
+    }
+    if (t.picture_description) {
+      addTimingRow('Pic description', '', 't-section');
+      addTimingRow('  Total', t.picture_description.total + 's');
+      if (t.picture_description.count > 1) addTimingRow('  Avg', t.picture_description.avg + 's');
+    }
+    if (t.picture_classification) {
+      addTimingRow('Pic classify', t.picture_classification.total + 's');
+    }
+    if (t.code_formula) {
+      addTimingRow('Code/Formula', t.code_formula.total + 's');
+    }
     if (t.page_init) {
       addTimingRow('VLM page init', '', 't-section');
       addTimingRow('  Total', t.page_init.total + 's');
@@ -291,11 +418,32 @@ function handleTiming(data) {
     if (t.doc_build)    addTimingRow('Build', t.doc_build.total + 's');
     if (t.doc_enrich)   addTimingRow('Enrich', t.doc_enrich.total + 's');
 
+  } else if (s === 'report_done') {
+    addTimingRow(filePrefix + 'Report', data.duration + 's');
+
+  } else if (s === 'gemini_enrich_done') {
+    if (data.error) {
+      addTimingRow('Gemini Enrich', 'ERROR: ' + data.error);
+    } else {
+      addTimingRow('Gemini Enrich', data.duration + 's');
+      addTimingRow('  Pictures', data.pictures);
+    }
+
+  } else if (s === 'reorder_done') {
+    addTimingRow(filePrefix + 'Reorder', data.duration + 's');
+
+  } else if (s === 'merge_done') {
+    addTimingRow('Merge batches', data.duration + 's');
+
   } else if (s === 'export_done') {
-    addTimingRow('Export', data.duration + 's');
+    addTimingRow(filePrefix + 'Export', data.duration + 's');
+
+  } else if (s === 'file_write_done') {
+    addTimingRow(filePrefix + 'File write', data.duration + 's');
+    if (data.size_kb) addTimingRow('  Size', data.size_kb + ' KB');
 
   } else if (s === 'chunking_done') {
-    addTimingRow('Chunking', data.duration + 's');
+    addTimingRow(filePrefix + 'Chunking', data.duration + 's');
     addTimingRow('  Chunks', data.chunk_count);
 
   } else if (s === 'total') {
@@ -306,8 +454,104 @@ function handleTiming(data) {
   }
 }
 
+// File status table (multi-file)
+function initFileStatusTable(filenames) {
+  const body = document.getElementById('file-status-body');
+  body.innerHTML = '';
+  filenames.forEach((name, i) => {
+    const tr = document.createElement('tr');
+    tr.id = `file-row-${i}`;
+    tr.className = 'file-row';
+    tr.onclick = () => selectFileRow(i);
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td class="file-row-name">${name}</td>
+      <td><span class="badge badge-pending" id="file-badge-${i}">pending</span></td>
+      <td id="file-pages-${i}">-</td>
+      <td id="file-actions-${i}">-</td>
+    `;
+    body.appendChild(tr);
+  });
+  document.getElementById('file-status-section').style.display = '';
+  document.getElementById('file-status-count').textContent = `(${filenames.length})`;
+}
+
+function updateFileStatus(data) {
+  const i = data.file_index;
+  const badge = document.getElementById(`file-badge-${i}`);
+  if (!badge) return;
+
+  badge.textContent = data.status;
+  badge.className = 'badge badge-' + data.status;
+
+  if (data.page_count != null) {
+    const pagesEl = document.getElementById(`file-pages-${i}`);
+    if (pagesEl) pagesEl.textContent = data.page_count;
+  }
+
+  if (data.status === 'done') {
+    const actionsEl = document.getElementById(`file-actions-${i}`);
+    if (actionsEl) {
+      actionsEl.innerHTML = `<a href="/download/${currentJobId}/${i}" class="btn-download btn-sm" download>Download</a>`;
+    }
+  } else if (data.status === 'error') {
+    const actionsEl = document.getElementById(`file-actions-${i}`);
+    if (actionsEl) {
+      actionsEl.innerHTML = `<span class="err-text" title="${(data.error || '').replace(/"/g, '&quot;')}">failed</span>`;
+    }
+  }
+}
+
+let currentJobId = null;
+
+function selectFileRow(index) {
+  selectedFileIndex = index;
+  // Highlight selected row
+  document.querySelectorAll('.file-row').forEach(r => r.classList.remove('file-row-selected'));
+  const row = document.getElementById(`file-row-${index}`);
+  if (row) row.classList.add('file-row-selected');
+
+  // Show report for this file
+  if (multiFileReports[index]) {
+    handleReport(multiFileReports[index]);
+  }
+
+  // Load output preview for this file
+  if (currentJobId) {
+    loadFileResult(currentJobId, index);
+  }
+}
+
+async function loadFileResult(jobId, index) {
+  try {
+    const r = await fetch(`/result/${jobId}/${index}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    const preview = document.getElementById('output-preview');
+    preview.textContent = data.content;
+    document.getElementById('output-section').style.display = '';
+    const dl = document.getElementById('download-btn');
+    dl.href = `/download/${jobId}/${index}`;
+    dl.download = data.name || 'result';
+
+    // Load chunks for this file
+    if (document.getElementById('do-chunk').checked) {
+      await fetchAndRenderChunksForFile(jobId, index);
+    }
+  } catch (_) {}
+}
+
 // Report table builder
 function handleReport(data) {
+  // For multi-file reports, data has file_index and report nested
+  let reportData = data;
+  if (data.file_index !== undefined) {
+    multiFileReports[data.file_index] = data;
+    // Only render if this is the selected file
+    if (data.file_index !== selectedFileIndex) return;
+    reportData = data.report || data;
+  }
+
   const body = document.getElementById('report-body');
   body.innerHTML = '';
 
@@ -326,17 +570,17 @@ function handleReport(data) {
   }
 
   // Overview
-  const ov = data.overview || {};
+  const ov = reportData.overview || {};
   sectionRow('Document');
   if (ov.filename) row('Filename', ov.filename);
   if (ov.mimetype) row('MIME type', ov.mimetype);
   if (ov.pages != null) row('Pages', ov.pages);
   if (ov.page_dimensions) row('Page dimensions', ov.page_dimensions);
   if (ov.pages_with_image) row('Pages with image', ov.pages_with_image);
-  if (data.total_elements != null) row('Total elements', data.total_elements);
+  if (reportData.total_elements != null) row('Total elements', reportData.total_elements);
 
   // Elements by label
-  const labels = data.elements_by_label || {};
+  const labels = reportData.elements_by_label || {};
   if (Object.keys(labels).length) {
     sectionRow('Elements by type');
     for (const [lbl, cnt] of Object.entries(labels)) {
@@ -345,23 +589,23 @@ function handleReport(data) {
   }
 
   // Heading levels
-  if (data.heading_levels) {
+  if (reportData.heading_levels) {
     sectionRow('Heading levels');
-    for (const [lv, cnt] of Object.entries(data.heading_levels)) {
+    for (const [lv, cnt] of Object.entries(reportData.heading_levels)) {
       row(lv, cnt, true);
     }
   }
 
   // List items
-  if (data.list_items) {
+  if (reportData.list_items) {
     sectionRow('List items');
-    if (data.list_items.enumerated) row('Enumerated', data.list_items.enumerated, true);
-    if (data.list_items.bulleted) row('Bulleted', data.list_items.bulleted, true);
+    if (reportData.list_items.enumerated) row('Enumerated', reportData.list_items.enumerated, true);
+    if (reportData.list_items.bulleted) row('Bulleted', reportData.list_items.bulleted, true);
   }
 
   // Tables detail
-  if (data.tables_detail) {
-    const td = data.tables_detail;
+  if (reportData.tables_detail) {
+    const td = reportData.tables_detail;
     sectionRow('Tables');
     row('Total cells', td.total_cells, true);
     if (td.column_header_cells) row('Column header cells', td.column_header_cells, true);
@@ -373,8 +617,8 @@ function handleReport(data) {
   }
 
   // Pictures detail
-  if (data.pictures_detail) {
-    const pd = data.pictures_detail;
+  if (reportData.pictures_detail) {
+    const pd = reportData.pictures_detail;
     sectionRow('Pictures');
     row('With image data', pd.with_image, true);
     if (pd.with_caption) row('With caption', pd.with_caption, true);
@@ -388,23 +632,23 @@ function handleReport(data) {
   }
 
   // Code languages
-  if (data.code_languages) {
+  if (reportData.code_languages) {
     sectionRow('Code blocks');
-    for (const [lang, cnt] of Object.entries(data.code_languages)) {
+    for (const [lang, cnt] of Object.entries(reportData.code_languages)) {
       row(lang, cnt, true);
     }
   }
 
   // Text formatting
-  if (data.text_formatting) {
+  if (reportData.text_formatting) {
     sectionRow('Text formatting');
-    for (const [fmt, cnt] of Object.entries(data.text_formatting)) {
+    for (const [fmt, cnt] of Object.entries(reportData.text_formatting)) {
       row(fmt, cnt, true);
     }
   }
 
   // Structure
-  const st = data.structure || {};
+  const st = reportData.structure || {};
   if (Object.keys(st).length) {
     sectionRow('Structure');
     if (st.with_bbox) row('With bounding box', st.with_bbox, true);
@@ -424,22 +668,22 @@ function handleReport(data) {
   }
 
   // Key-value / forms
-  if (data.key_value_detail) {
+  if (reportData.key_value_detail) {
     sectionRow('Key-Value regions');
-    row('Regions', data.key_value_detail.regions, true);
-    row('Cells', data.key_value_detail.cells, true);
+    row('Regions', reportData.key_value_detail.regions, true);
+    row('Cells', reportData.key_value_detail.cells, true);
   }
-  if (data.form_detail) {
+  if (reportData.form_detail) {
     sectionRow('Forms');
-    row('Forms', data.form_detail.forms, true);
-    row('Cells', data.form_detail.cells, true);
+    row('Forms', reportData.form_detail.forms, true);
+    row('Cells', reportData.form_detail.cells, true);
   }
 
   // Pages coverage
-  if (data.pages_coverage) {
+  if (reportData.pages_coverage) {
     sectionRow('Pages coverage');
-    row('Pages with content', data.pages_coverage.pages_with_content, true);
-    row('Avg elements/page', data.pages_coverage.avg_elements_per_page, true);
+    row('Pages with content', reportData.pages_coverage.pages_with_content, true);
+    row('Avg elements/page', reportData.pages_coverage.avg_elements_per_page, true);
   }
 
   document.getElementById('report-section').style.display = '';
@@ -452,7 +696,6 @@ function copyReport() {
   rows.forEach(tr => {
     const cells = tr.querySelectorAll('th, td');
     if (cells.length === 1) {
-      // section header
       lines.push('\n' + cells[0].textContent.trim());
     } else if (cells.length === 2) {
       lines.push(cells[0].textContent.trim() + '\t' + cells[1].textContent.trim());
@@ -474,13 +717,24 @@ async function startConvert() {
   btn.disabled = true;
 
   clearConsole();
+  const geminiEl = document.getElementById('gemini-console');
+  if (geminiEl) geminiEl.innerHTML = '';
+  const promptBtn = document.getElementById('download-prompts-btn');
+  if (promptBtn) promptBtn.style.display = 'none';
   resetTiming();
+  isMultiFile = false;
+  multiFileReports = {};
+  selectedFileIndex = 0;
+  currentJobId = null;
   document.getElementById('job-info-section').style.display = 'none';
   document.getElementById('job-info-rows').innerHTML = '';
   document.getElementById('chunks-section').style.display = 'none';
   document.getElementById('chunks-list').innerHTML = '';
   document.getElementById('report-section').style.display = 'none';
   document.getElementById('report-body').innerHTML = '';
+  document.getElementById('file-status-section').style.display = 'none';
+  document.getElementById('file-status-body').innerHTML = '';
+  document.getElementById('download-all-btn').style.display = 'none';
   _chunksData = [];
   _lastPageCount = 0;
   document.getElementById('content-row').style.display = 'flex';
@@ -500,21 +754,41 @@ async function startConvert() {
   const picDescEl = document.querySelector('input[name="pic-desc-model"]:checked');
   if (picDescEl) fd.append('pic_desc_model', picDescEl.value);
   fd.append('pdf_backend', document.getElementById('pdf-backend').value);
-  fd.append('page_from', document.getElementById('page-from').value || 1);
-  fd.append('page_to', document.getElementById('page-to').value || 0);
+  fd.append('table_mode', document.getElementById('table-mode').value);
+  fd.append('accelerator', document.getElementById('accelerator').value);
   fd.append('do_chunk', document.getElementById('do-chunk').checked);
   fd.append('chunk_max_tokens', document.getElementById('chunk-max-tokens').value);
   fd.append('queue_max_size', document.getElementById('queue-max-size').value);
-  fd.append('batch_size', document.getElementById('batch-size').value);
+  fd.append('layout_batch_size', document.getElementById('layout-batch-size').value || 0);
+  fd.append('table_batch_size', document.getElementById('table-batch-size').value || 0);
+  fd.append('ocr_batch_size', document.getElementById('ocr-batch-size').value || 0);
   fd.append('reorder', document.getElementById('reorder').checked);
+  fd.append('free_vram', document.getElementById('free-vram').checked);
+  fd.append('gemini_enrich', document.getElementById('gemini-enrich').checked);
+  fd.append('doc_concurrency', document.getElementById('doc-concurrency').value);
+  fd.append('doc_batch_size_setting', document.getElementById('doc-concurrency').value);
 
   if (currentTab === 'file') {
-    if (!selectedFile) { appendLog('ERROR: No file selected.', 'err'); btn.disabled = false; return; }
-    fd.append('file', selectedFile);
+    if (selectedFiles.length === 0) { appendLog('ERROR: No file selected.', 'err'); btn.disabled = false; return; }
+    if (selectedFiles.length === 1) {
+      // Single file: use 'file' field for backward compat
+      fd.append('file', selectedFiles[0]);
+      fd.append('page_from', document.getElementById('page-from').value || 1);
+      fd.append('page_to', document.getElementById('page-to').value || 0);
+      fd.append('batch_size', document.getElementById('batch-size').value);
+    } else {
+      // Multi-file: use 'files' field repeated
+      isMultiFile = true;
+      selectedFiles.forEach(f => fd.append('files', f));
+      initFileStatusTable(selectedFiles.map(f => f.name));
+    }
   } else {
     const url = document.getElementById('url-input').value.trim();
     if (!url) { appendLog('ERROR: No URL entered.', 'err'); btn.disabled = false; return; }
     fd.append('url', url);
+    fd.append('page_from', document.getElementById('page-from').value || 1);
+    fd.append('page_to', document.getElementById('page-to').value || 0);
+    fd.append('batch_size', document.getElementById('batch-size').value);
   }
 
   let jobId;
@@ -527,13 +801,14 @@ async function startConvert() {
       return;
     }
     jobId = data.job_id;
+    currentJobId = jobId;
   } catch (e) {
     appendLog('ERROR: ' + e.message, 'err');
     btn.disabled = false;
     return;
   }
 
-  appendLog(`Job ${jobId} started…`);
+  appendLog(`Job ${jobId} started...`);
   startElapsedTimer();
 
   const es = new EventSource(`/stream/${jobId}`);
@@ -557,9 +832,44 @@ async function startConvert() {
     try { handleReport(JSON.parse(e.data)); } catch (_) {}
   });
 
+  es.addEventListener('file_status', e => {
+    try { updateFileStatus(JSON.parse(e.data)); } catch (_) {}
+  });
+
+  es.addEventListener('gemini_log', e => {
+    const msg = e.data;
+    if (msg === '__PROMPTS_READY__') {
+      const btn = document.getElementById('download-prompts-btn');
+      if (btn) btn.style.display = '';
+    } else {
+      appendGeminiLog(msg);
+    }
+  });
+
   es.addEventListener('done', async () => {
     es.close(); activeSource = null;
     stopElapsedTimer();
+
+    if (isMultiFile) {
+      // Multi-file done
+      const dlAll = document.getElementById('download-all-btn');
+      dlAll.href = `/download/${jobId}`;
+      dlAll.download = 'results.zip';
+      dlAll.style.display = '';
+
+      // Auto-select first done file
+      const body = document.getElementById('file-status-body');
+      const firstDone = body.querySelector('.badge-done');
+      if (firstDone) {
+        const row = firstDone.closest('tr');
+        const idx = parseInt(row.id.replace('file-row-', ''));
+        selectFileRow(idx);
+      }
+      btn.disabled = false;
+      return;
+    }
+
+    // Single-file done (unchanged)
     try {
       const r = await fetch(`/result/${jobId}`);
       const data = await r.json();

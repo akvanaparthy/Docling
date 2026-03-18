@@ -19,12 +19,14 @@
 
     <div id="input-file">
       <div class="dropzone" id="dropzone">
-        <p>Drop a file here or <label for="file-input" class="link">browse</label></p>
-        <p class="hint">PDF, DOCX, PPTX, XLSX, HTML, LaTeX, PNG, TIFF, JPEG</p>
-        <input type="file" id="file-input" hidden
+        <p>Drop files here or <label for="file-input" class="link">browse</label></p>
+        <p class="hint">PDF, DOCX, PPTX, XLSX, HTML, LaTeX, PNG, TIFF, JPEG &middot; Max 20 files</p>
+        <input type="file" id="file-input" hidden multiple
                accept=".pdf,.docx,.pptx,.xlsx,.html,.tex,.png,.tiff,.tif,.jpg,.jpeg">
         <p id="file-name" class="file-name"></p>
       </div>
+      <!-- Multi-file list -->
+      <div id="file-list" class="file-list" style="display:none"></div>
     </div>
 
     <div id="input-url" style="display:none">
@@ -41,6 +43,14 @@
         </select>
       </div>
       <div class="option-group">
+        <label>Device</label>
+        <select id="accelerator">
+          <option value="auto">Auto</option>
+          <option value="cpu">CPU</option>
+          <option value="cuda">GPU (CUDA)</option>
+        </select>
+      </div>
+      <div class="option-group">
         <label>PDF Backend</label>
         <select id="pdf-backend">
           <option value="docling">DoclingParse</option>
@@ -51,9 +61,16 @@
         <label><input type="checkbox" id="ocr" checked> OCR</label>
       </div>
       <div class="option-group">
-        <label><input type="checkbox" id="do-picture-description" onchange="updatePicDescSection()"> Describe pictures</label>
+        <label>Table mode</label>
+        <select id="table-mode">
+          <option value="accurate">Accurate</option>
+          <option value="fast">Fast</option>
+        </select>
       </div>
       <div class="option-group">
+        <label><input type="checkbox" id="do-picture-description" onchange="updatePicDescSection()"> Describe pictures</label>
+      </div>
+      <div class="option-group" id="pages-group">
         <label>Pages</label>
         <div style="display:flex;align-items:center;gap:6px">
           <input type="number" id="page-from" value="1" min="1" class="tokens-input" placeholder="1">
@@ -66,11 +83,33 @@
         <input type="number" id="queue-max-size" value="100" min="4" max="200" step="1" class="tokens-input" title="Max pages in-flight in pipeline (lower = less memory, default 100)">
       </div>
       <div class="option-group">
+        <label>Layout batch</label>
+        <input type="number" id="layout-batch-size" value="" min="0" max="100" step="1" class="tokens-input" placeholder="default" title="Pages per layout model inference (0 = default)">
+      </div>
+      <div class="option-group">
+        <label>Table batch</label>
+        <input type="number" id="table-batch-size" value="" min="0" max="100" step="1" class="tokens-input" placeholder="default" title="Pages per table structure inference (0 = default)">
+      </div>
+      <div class="option-group">
+        <label>OCR batch</label>
+        <input type="number" id="ocr-batch-size" value="" min="0" max="100" step="1" class="tokens-input" placeholder="default" title="Pages per OCR inference (0 = default)">
+      </div>
+      <div class="option-group" id="batch-size-group">
         <label>Batch size</label>
         <input type="number" id="batch-size" value="0" min="0" max="500" step="10" class="tokens-input" title="Split large PDFs into N-page batches (0 = no batching)">
       </div>
       <div class="option-group">
+        <label>Parallel files</label>
+        <input type="number" id="doc-concurrency" value="4" min="1" max="8" step="1" class="tokens-input" title="Number of files processed in parallel (multi-file only)">
+      </div>
+      <div class="option-group">
         <label><input type="checkbox" id="reorder" checked> Reorder</label>
+      </div>
+      <div class="option-group">
+        <label><input type="checkbox" id="free-vram"> Free VRAM</label>
+      </div>
+      <div class="option-group">
+        <label><input type="checkbox" id="gemini-enrich" onchange="updateGeminiSection()"> Gemini Enrich</label>
       </div>
       <div class="option-group">
         <label><input type="checkbox" id="do-chunk" onchange="updateChunkSection()"> Chunk</label>
@@ -104,6 +143,22 @@
 
     <button id="convert-btn" onclick="startConvert()">Convert</button>
 
+    <!-- File status table (multi-file only) -->
+    <div id="file-status-section" style="display:none">
+      <div class="output-header">
+        <span>Files <span id="file-status-count" style="color:#555"></span></span>
+        <div style="display:flex;gap:6px">
+          <a id="download-all-btn" class="btn-download" style="display:none">Download All (ZIP)</a>
+        </div>
+      </div>
+      <div class="file-status-table-wrap">
+        <table class="file-status-table" id="file-status-table">
+          <thead><tr><th>#</th><th>Filename</th><th>Status</th><th>Pages</th><th>Actions</th></tr></thead>
+          <tbody id="file-status-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Main content area: logs+output left, timing right -->
     <div class="content-row" id="content-row" style="display:none">
 
@@ -112,6 +167,18 @@
         <div class="console-wrap" id="console-wrap">
           <div class="console-header">Logs</div>
           <pre id="log-console" class="console"></pre>
+        </div>
+
+        <!-- Gemini Enrich log terminal -->
+        <div class="console-wrap" id="gemini-console-wrap" style="display:none">
+          <div class="console-header" style="display:flex;justify-content:space-between;align-items:center">
+            <span>Gemini Enrich</span>
+            <button id="download-prompts-btn" onclick="downloadPrompts()"
+              style="display:none" class="btn-secondary btn-sm">
+              Download Prompt Log
+            </button>
+          </div>
+          <pre id="gemini-console" class="console"></pre>
         </div>
 
         <!-- Output -->
@@ -152,6 +219,7 @@
           <div class="timing-divider"></div>
           <div id="job-info-rows"></div>
         </div>
+        <div id="prompts-download-section"></div>
       </div>
 
     </div>

@@ -317,3 +317,81 @@ h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; }
   font-weight: 600;
 }
 .report-table .report-indent td:first-child { padding-left: 24px; }
+
+/* File list (pre-upload) */
+.file-list {
+  margin-top: 8px;
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+  overflow: hidden;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.file-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #141414;
+  font-size: 12px;
+}
+.file-list-item:last-child { border-bottom: none; }
+.file-list-name { flex: 1; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list-size { color: #555; font-size: 11px; white-space: nowrap; }
+.file-list-remove {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.file-list-remove:hover { color: #ff4444; }
+
+/* File status table (multi-file) */
+.file-status-table-wrap {
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.file-status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.file-status-table thead th {
+  background: #111;
+  color: #555;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid #1e1e1e;
+  font-weight: 500;
+}
+.file-status-table tbody td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #141414;
+  color: #ccc;
+}
+.file-status-table tbody tr:last-child td { border-bottom: none; }
+.file-row { cursor: pointer; transition: background 0.15s; }
+.file-row:hover { background: #151515; }
+.file-row-selected { background: #1a1a2e !important; }
+.file-row-name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn-sm { font-size: 11px; padding: 2px 10px; }
+.err-text { color: #ff4444; font-size: 11px; }
+
+/* File status badges */
+.badge-pending    { background: #1a1a1a; color: #666;    border: 1px solid #333; }
+.badge-converting { background: #1a2a3a; color: #7eb8f7; border: 1px solid #2a4a6a; animation: pulse 1.5s ease-in-out infinite; }
+.badge-done       { background: #0d2a1a; color: #00cc77; border: 1px solid #1a4a2a; }
+.badge-error      { background: #2a1010; color: #ff4444; border: 1px solid #4a1a1a; }
+.badge-partial    { background: #2a2a10; color: #ccaa00; border: 1px solid #4a4a1a; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}

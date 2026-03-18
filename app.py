@@ -5,6 +5,7 @@ import queue
 import shutil
 import threading
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -19,6 +20,7 @@ UPLOADS = Path("uploads")
 OUTPUTS = Path("outputs")
 MAX_UPLOAD_MB = int(__import__("os").environ.get("MAX_UPLOAD_MB", 200))
 MAX_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+MAX_MULTI_FILES = 20
 
 jobs: dict[str, dict] = {}
 
@@ -49,8 +51,9 @@ async def cleanup_loop():
         await asyncio.sleep(300)
         cutoff = datetime.utcnow() - timedelta(hours=1)
         for job_id, job in list(jobs.items()):
-            if job["status"] in ("done", "error") and job["created_at"] < cutoff:
+            if job["status"] in ("done", "error", "partial") and job["created_at"] < cutoff:
                 shutil.rmtree(OUTPUTS / job_id, ignore_errors=True)
+                shutil.rmtree(UPLOADS / job_id, ignore_errors=True)
                 for f in UPLOADS.glob(f"{job_id}*"):
                     f.unlink(missing_ok=True)
                 del jobs[job_id]
@@ -310,6 +313,86 @@ def _build_report(doc) -> dict:
     return report
 
 
+def _merge_orphaned_list_descriptions(doc, y_tolerance: float = 3.0) -> None:
+    """Find body-level text elements that spatially belong to list items and merge them.
+
+    Detects text elements parented to body whose top-Y matches a list item's top-Y
+    (within tolerance) and whose left-X is to the right of the list item. These are
+    description texts that Docling incorrectly parsed as separate body elements
+    instead of part of the list item.
+
+    Merges the orphan's text and provenance into the matching list item, then deletes
+    the orphan from the document tree.
+    """
+    ref_map = {}
+    for lst in [doc.texts, doc.tables, doc.pictures,
+                doc.key_value_items, doc.form_items,
+                getattr(doc, 'field_items', []), getattr(doc, 'field_regions', [])]:
+        for item in lst:
+            if hasattr(item, 'self_ref'):
+                ref_map[item.self_ref] = item
+    for g in doc.groups:
+        ref_map[g.self_ref] = g
+
+    # Build a lookup: (page, rounded_top_y) -> list_item for all list items in list groups
+    list_item_by_pos = {}
+    for g in doc.groups:
+        lbl = g.label.value if hasattr(g.label, 'value') else str(g.label)
+        if lbl != 'list':
+            continue
+        for ch in g.children:
+            item = ref_map.get(ch.cref)
+            if item is None or not hasattr(item, 'prov') or not item.prov:
+                continue
+            pv = item.prov[0]
+            if pv.bbox:
+                key = (pv.page_no, round(pv.bbox.t, 0))
+                list_item_by_pos[key] = (item, pv.bbox)
+
+    if not list_item_by_pos:
+        return
+
+    # Find body-level text orphans that match a list item's Y position
+    orphans_to_merge = []  # (orphan_item, matching_list_item)
+    body_ref = doc.body.self_ref if hasattr(doc.body, 'self_ref') else '#/body'
+    for t in doc.texts:
+        parent_cref = t.parent.cref if hasattr(t, 'parent') and t.parent else None
+        if parent_cref != body_ref:
+            continue
+        if not t.prov:
+            continue
+        pv = t.prov[0]
+        if not pv.bbox:
+            continue
+        # Check for matching list item at same Y
+        key = (pv.page_no, round(pv.bbox.t, 0))
+        match = list_item_by_pos.get(key)
+        if match is None:
+            # Try nearby Y values within tolerance
+            for dy in range(-int(y_tolerance), int(y_tolerance) + 1):
+                alt_key = (pv.page_no, round(pv.bbox.t, 0) + dy)
+                match = list_item_by_pos.get(alt_key)
+                if match:
+                    break
+        if match is None:
+            continue
+        list_item, list_bbox = match
+        # Orphan must be to the right of the list item
+        if pv.bbox.l > list_bbox.r:
+            orphans_to_merge.append((t, list_item))
+
+    # Merge orphans into their matching list items
+    for orphan, list_item in orphans_to_merge:
+        # Merge text content
+        list_item.text = list_item.text + " " + orphan.text
+        if hasattr(list_item, 'orig') and hasattr(orphan, 'orig') and orphan.orig:
+            list_item.orig = (list_item.orig or list_item.text) + " " + orphan.orig
+        # Merge provenance (preserves both bboxes)
+        list_item.prov.extend(orphan.prov)
+        # Remove orphan from document
+        doc.delete_items(node_items=[orphan])
+
+
 def _reorder_body_children(doc) -> None:
     """Sort body.children in-place by (page ASC, t DESC, l ASC).
 
@@ -317,6 +400,12 @@ def _reorder_body_children(doc) -> None:
     Groups are atomic units — positioned by their first leaf element's bbox.
     Recurses through nested groups to find the first prov-bearing element.
     """
+    # First, merge orphaned list descriptions into their matching list items
+    try:
+        _merge_orphaned_list_descriptions(doc)
+    except Exception:
+        pass  # non-critical, continue with reorder
+
     ref_map = {}
     for lst in [doc.texts, doc.tables, doc.pictures,
                 doc.key_value_items, doc.form_items,
@@ -350,11 +439,87 @@ def _reorder_body_children(doc) -> None:
     doc.body.children.sort(key=sort_key)
 
 
-def _export_result(result, fmt: str) -> str:
-    return _export_result_from_doc(result.document, fmt)
+def _reindex_json_reading_order(data: dict) -> dict:
+    """Reorder texts/tables/pictures/groups arrays to match body.children
+    reading order, and rewrite all #/type/N references throughout the document.
+
+    Walks body tree depth-first to collect the canonical order for each array,
+    then reindexes and rewrites every JSON-pointer reference in the document.
+    Assumes body.children is already sorted (by _reorder_body_children).
+    """
+    ARRAY_KEYS = ['texts', 'tables', 'pictures', 'groups',
+                  'key_value_items', 'form_items']
+
+    # Build ref → item lookup
+    ref_items = {}
+    for key in ARRAY_KEYS:
+        for item in data.get(key, []):
+            sr = item.get('self_ref', '')
+            if sr:
+                ref_items[sr] = item
+
+    # Walk tree depth-first to collect reading order per array
+    order = {key: [] for key in ARRAY_KEYS}
+    seen = set()
+
+    def collect(ref: str):
+        if not ref or ref in seen:
+            return
+        seen.add(ref)
+        parts = ref.lstrip('#').lstrip('/').split('/')
+        if len(parts) == 2 and parts[0] in order:
+            try:
+                order[parts[0]].append(int(parts[1]))
+            except ValueError:
+                pass
+        item = ref_items.get(ref)
+        if item:
+            for child in item.get('children', []):
+                collect(child.get('cref', ''))
+
+    for child in data.get('body', {}).get('children', []):
+        collect(child.get('cref', ''))
+    for child in data.get('furniture', {}).get('children', []):
+        collect(child.get('cref', ''))
+
+    # Append orphans (not reachable from body/furniture) at end
+    for key in ARRAY_KEYS:
+        visited_set = set(order[key])
+        for idx in range(len(data.get(key, []))):
+            if idx not in visited_set:
+                order[key].append(idx)
+
+    # Build old→new ref mapping
+    ref_map = {}
+    for key in ARRAY_KEYS:
+        for new_idx, old_idx in enumerate(order[key]):
+            if old_idx != new_idx:
+                ref_map[f'#/{key}/{old_idx}'] = f'#/{key}/{new_idx}'
+
+    # Reorder arrays
+    for key in ARRAY_KEYS:
+        arr = data.get(key, [])
+        if arr and order[key]:
+            data[key] = [arr[old_idx] for old_idx in order[key]]
+
+    # Rewrite all references recursively
+    def rewrite(obj):
+        if isinstance(obj, str):
+            return ref_map.get(obj, obj)
+        if isinstance(obj, dict):
+            return {k: rewrite(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [rewrite(v) for v in obj]
+        return obj
+
+    return rewrite(data)
 
 
-def _export_result_from_doc(doc, fmt: str) -> str:
+def _export_result(result, fmt: str, reorder: bool = False) -> str:
+    return _export_result_from_doc(result.document, fmt, reorder=reorder)
+
+
+def _export_result_from_doc(doc, fmt: str, reorder: bool = False) -> str:
     if fmt == "md":
         return doc.export_to_markdown()
     elif fmt == "html":
@@ -362,7 +527,10 @@ def _export_result_from_doc(doc, fmt: str) -> str:
         return md_lib.markdown(doc.export_to_markdown())
     elif fmt == "json":
         import json
-        return json.dumps(doc.model_dump(mode='json'), indent=2)
+        d = doc.model_dump(mode='json')
+        if reorder:
+            d = _reindex_json_reading_order(d)
+        return json.dumps(d, indent=2)
     elif fmt == "doctags":
         return doc.export_to_doctags()
     raise ValueError(f"Unknown format: {fmt}")
@@ -397,16 +565,124 @@ class _QueueHandler(logging.Handler):
             pass
 
 
+def _build_converter(pipeline, ocr, pdf_backend, queue_max_size,
+                     do_picture_description, pic_desc_model, vlm_model,
+                     layout_batch_size, table_batch_size, ocr_batch_size,
+                     table_mode, accelerator, send_info, send_timing,
+                     gemini_enrich: bool = False):
+    """Build and return a DocumentConverter with the given options.
+
+    Shared by _run_conversion and _run_multi_conversion to avoid duplicating
+    the complex converter construction logic.
+    Returns (converter, device).
+    """
+    import time
+
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.backend.docling_parse_v4_backend import DoclingParseV4DocumentBackend
+    from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+
+    _backend_cls = PyPdfiumDocumentBackend if pdf_backend == "pypdfium" else DoclingParseV4DocumentBackend
+
+    if accelerator == "auto":
+        device = "cuda" if torch_cuda_available() else "cpu"
+    else:
+        device = accelerator
+
+    def _pic_desc_options():
+        from docling.datamodel.pipeline_options import PictureDescriptionVlmEngineOptions
+        preset_id = PIC_DESC_PRESETS.get(pic_desc_model, PIC_DESC_PRESETS["smolvlm"])["preset_id"]
+        return PictureDescriptionVlmEngineOptions.from_preset(preset_id)
+
+    def _apply_pic_opts(base: dict) -> dict:
+        if do_picture_description:
+            base["picture_description_options"] = _pic_desc_options()
+            base["generate_picture_images"] = True
+        elif gemini_enrich:
+            # Need images rendered even without local VLM pic desc
+            base["generate_picture_images"] = True
+        return base
+
+    # Build optional batch-size kwargs (0 = use Docling defaults)
+    _batch_kw = {}
+    if layout_batch_size > 0:
+        _batch_kw["layout_batch_size"] = layout_batch_size
+    if table_batch_size > 0:
+        _batch_kw["table_batch_size"] = table_batch_size
+    if ocr_batch_size > 0:
+        _batch_kw["ocr_batch_size"] = ocr_batch_size
+
+    # Accelerator device (auto / cpu / cuda)
+    if accelerator != "auto":
+        from docling.datamodel.pipeline_options import AcceleratorOptions, AcceleratorDevice
+        _dev = AcceleratorDevice.CUDA if accelerator == "cuda" else AcceleratorDevice.CPU
+        _batch_kw["accelerator_options"] = AcceleratorOptions(device=_dev)
+
+    # Table structure mode (fast / accurate)
+    if table_mode == "fast":
+        from docling.datamodel.pipeline_options import TableStructureOptions, TableFormerMode
+        _batch_kw["table_structure_options"] = TableStructureOptions(mode=TableFormerMode.FAST)
+    elif table_mode == "accurate":
+        from docling.datamodel.pipeline_options import TableStructureOptions, TableFormerMode
+        _batch_kw["table_structure_options"] = TableStructureOptions(mode=TableFormerMode.ACCURATE)
+
+    t0 = time.perf_counter()
+    if pipeline == "vlm":
+        try:
+            from docling.datamodel.pipeline_options import VlmPipelineOptions
+            from docling.pipeline.vlm_pipeline import VlmPipeline
+            from docling.datamodel import vlm_model_specs
+            preset_info = VLM_PRESETS.get(vlm_model, VLM_PRESETS["GRANITEDOCLING"])
+            preset = getattr(vlm_model_specs, preset_info["spec"])
+            pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
+            opts = VlmPipelineOptions(vlm_options=preset, **pic_opts)
+            send_info({"pipeline": "vlm", "model": preset_info["label"], "device": device,
+                       "do_picture_description": do_picture_description,
+                       "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None,
+                       "gemini_enrich": gemini_enrich})
+            converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_cls=VlmPipeline, backend=_backend_cls, pipeline_options=opts)}
+            )
+        except ImportError:
+            pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
+            opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size, **_batch_kw, **pic_opts)
+            send_info({"pipeline": "standard", "model": None, "device": device,
+                       "do_picture_description": do_picture_description, "ocr": ocr,
+                       "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None,
+                       "gemini_enrich": gemini_enrich})
+            converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(backend=_backend_cls, pipeline_options=opts)}
+            )
+    else:
+        pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
+        opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size, **_batch_kw, **pic_opts)
+        send_info({"pipeline": "standard", "model": None, "device": device,
+                   "do_picture_description": do_picture_description, "ocr": ocr,
+                   "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None})
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(backend=_backend_cls, pipeline_options=opts)}
+        )
+    send_timing({"stage": "pipeline_init", "duration": round(time.perf_counter() - t0, 2)})
+
+    return converter, device
+
+
 def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str,
                     do_picture_description: bool = False, pic_desc_model: str = "smolvlm",
                     vlm_model: str = "GRANITEDOCLING",
                     do_chunk: bool = False, chunk_max_tokens: int = 256,
                     page_from: int = 1, page_to: int = 0, pdf_backend: str = "docling",
-                    queue_max_size: int = 100, batch_size: int = 0, reorder: bool = True):
+                    queue_max_size: int = 100, batch_size: int = 0, reorder: bool = True,
+                    layout_batch_size: int = 0, table_batch_size: int = 0, ocr_batch_size: int = 0,
+                    table_mode: str = "accurate", accelerator: str = "auto",
+                    free_vram: bool = False, gemini_enrich: bool = False):
     import time, json as _json2
     _thread_local.job_id = job_id
     job = jobs[job_id]
     job["status"] = "running"
+    out_dir = OUTPUTS / job_id
     t_total_start = time.perf_counter()
 
     handler = _QueueHandler(job["queue"])
@@ -415,6 +691,13 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
     docling_logger = logging.getLogger("docling")
     docling_logger.setLevel(logging.DEBUG)
     docling_logger.addHandler(handler)
+
+    gemini_handler = _QueueHandler(job["queue"])
+    gemini_handler.setFormatter(logging.Formatter("__GEMINI__:%(message)s"))
+    gemini_handler.addFilter(_JobFilter(job_id))
+    enricher_logger = logging.getLogger("enricher")
+    enricher_logger.setLevel(logging.DEBUG)
+    enricher_logger.addHandler(gemini_handler)
 
     def send_timing(data: dict):
         job["queue"].put(f"__TIMING__:{_json2.dumps(data)}")
@@ -426,63 +709,16 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
         job["queue"].put(f"__REPORT__:{_json2.dumps(data)}")
 
     try:
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.datamodel.settings import settings
-        from docling.backend.docling_parse_v4_backend import DoclingParseV4DocumentBackend
-        from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
-        _backend_cls = PyPdfiumDocumentBackend if pdf_backend == "pypdfium" else DoclingParseV4DocumentBackend
-
         settings.debug.profile_pipeline_timings = True
-        device = "cuda" if torch_cuda_available() else "cpu"
 
-        def _pic_desc_options():
-            from docling.datamodel.pipeline_options import PictureDescriptionVlmEngineOptions
-            preset_id = PIC_DESC_PRESETS.get(pic_desc_model, PIC_DESC_PRESETS["smolvlm"])["preset_id"]
-            return PictureDescriptionVlmEngineOptions.from_preset(preset_id)
-
-        def _apply_pic_opts(base: dict) -> dict:
-            if do_picture_description:
-                base["picture_description_options"] = _pic_desc_options()
-                base["generate_picture_images"] = True
-            return base
-
-        t0 = time.perf_counter()
-        if pipeline == "vlm":
-            try:
-                from docling.datamodel.pipeline_options import VlmPipelineOptions
-                from docling.pipeline.vlm_pipeline import VlmPipeline
-                from docling.datamodel import vlm_model_specs
-                preset_info = VLM_PRESETS.get(vlm_model, VLM_PRESETS["GRANITEDOCLING"])
-                preset = getattr(vlm_model_specs, preset_info["spec"])
-                pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
-                opts = VlmPipelineOptions(vlm_options=preset, **pic_opts)
-                send_info({"pipeline": "vlm", "model": preset_info["label"], "device": device,
-                           "do_picture_description": do_picture_description,
-                           "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None})
-                converter = DocumentConverter(
-                    format_options={InputFormat.PDF: PdfFormatOption(pipeline_cls=VlmPipeline, backend=_backend_cls, pipeline_options=opts)}
-                )
-            except ImportError:
-                pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
-                opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size, **pic_opts)
-                send_info({"pipeline": "standard", "model": None, "device": device,
-                           "do_picture_description": do_picture_description, "ocr": ocr,
-                           "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None})
-                converter = DocumentConverter(
-                    format_options={InputFormat.PDF: PdfFormatOption(backend=_backend_cls, pipeline_options=opts)}
-                )
-        else:
-            pic_opts = _apply_pic_opts({"do_picture_description": do_picture_description})
-            opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size, **pic_opts)
-            send_info({"pipeline": "standard", "model": None, "device": device,
-                       "do_picture_description": do_picture_description, "ocr": ocr,
-                       "pic_desc_model": PIC_DESC_PRESETS.get(pic_desc_model, {}).get("label") if do_picture_description else None})
-            converter = DocumentConverter(
-                format_options={InputFormat.PDF: PdfFormatOption(backend=_backend_cls, pipeline_options=opts)}
-            )
-        send_timing({"stage": "pipeline_init", "duration": round(time.perf_counter() - t0, 2)})
+        converter, device = _build_converter(
+            pipeline, ocr, pdf_backend, queue_max_size,
+            do_picture_description, pic_desc_model, vlm_model,
+            layout_batch_size, table_batch_size, ocr_batch_size,
+            table_mode, accelerator, send_info, send_timing,
+            gemini_enrich=gemini_enrich
+        )
 
         # Determine if we should use batched conversion
         is_pdf = source.lower().endswith(".pdf")
@@ -519,23 +755,51 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             })
 
             try:
+                t0 = time.perf_counter()
                 report = _build_report(result.document)
                 send_report(report)
+                send_timing({"stage": "report_done", "duration": round(time.perf_counter() - t0, 2)})
             except Exception:
                 pass  # report is non-critical
 
-            t0 = time.perf_counter()
+            if gemini_enrich:
+                t0 = time.perf_counter()
+                try:
+                    import json as _json_e
+                    from enricher import enrich as _gemini_enrich
+                    _fname = Path(source).name
+                    n_enriched, prompt_log = _gemini_enrich(result.document, filename=_fname)
+                    # Save prompt log for download
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    prompts_path = out_dir / "prompts.json"
+                    prompts_path.write_text(_json_e.dumps(prompt_log, indent=2), encoding="utf-8")
+                    job["prompts_path"] = prompts_path
+                    _dur = round(time.perf_counter() - t0, 2)
+                    send_timing({"stage": "gemini_enrich_done", "duration": _dur, "pictures": n_enriched})
+                    job["queue"].put(f"__GEMINI__:Enrichment complete — {n_enriched} picture(s) in {_dur}s. Prompt log saved.")
+                    job["queue"].put(f"__GEMINI__:__PROMPTS_READY__")
+                except Exception as _ee:
+                    _dur = round(time.perf_counter() - t0, 2)
+                    send_timing({"stage": "gemini_enrich_done", "duration": _dur, "error": str(_ee)})
+                    job["queue"].put(f"__GEMINI__:ERROR after {_dur}s: {_ee}")
+
             if reorder:
+                t0 = time.perf_counter()
                 _reorder_body_children(result.document)
-            text = _export_result(result, fmt)
+                send_timing({"stage": "reorder_done", "duration": round(time.perf_counter() - t0, 2)})
+
+            t0 = time.perf_counter()
+            text = _export_result(result, fmt, reorder=reorder)
             send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
             all_docs = [result.document] if do_chunk else []
 
-        out_dir = OUTPUTS / job_id
         out_dir.mkdir(parents=True, exist_ok=True)
         ext = EXT_MAP[fmt]
         out_path = out_dir / f"result{ext}"
+        t0 = time.perf_counter()
         out_path.write_text(text, encoding="utf-8")
+        send_timing({"stage": "file_write_done", "duration": round(time.perf_counter() - t0, 2),
+                     "size_kb": round(len(text.encode("utf-8")) / 1024, 1)})
 
         if do_chunk:
             t0 = time.perf_counter()
@@ -574,6 +838,253 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
         job["status"] = "error"
         job["error"] = str(e)
     finally:
+        if free_vram and torch_cuda_available():
+            import gc, torch
+            # Delete converter and its cached pipelines to release model tensors
+            try:
+                converter.initialized_pipelines.clear()
+            except Exception:
+                pass
+            try:
+                del converter
+            except Exception:
+                pass
+            gc.collect()
+            torch.cuda.empty_cache()
+        docling_logger.removeHandler(handler)
+        enricher_logger.removeHandler(gemini_handler)
+        job["queue"].put(None)  # sentinel
+
+
+def _run_multi_conversion(job_id, sources, filenames, pipeline, ocr, fmt,
+                          do_picture_description, pic_desc_model, vlm_model,
+                          do_chunk, chunk_max_tokens, pdf_backend, queue_max_size,
+                          reorder, layout_batch_size, table_batch_size, ocr_batch_size,
+                          table_mode, accelerator, doc_concurrency, doc_batch_size_setting,
+                          free_vram: bool = False, gemini_enrich: bool = False):
+    """Convert multiple files in parallel using converter.convert_all()."""
+    import time
+    import json as _json2
+
+    _thread_local.job_id = job_id
+    job = jobs[job_id]
+    job["status"] = "running"
+    t_total_start = time.perf_counter()
+
+    handler = _QueueHandler(job["queue"])
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    handler.addFilter(_JobFilter(job_id))
+    docling_logger = logging.getLogger("docling")
+    docling_logger.setLevel(logging.DEBUG)
+    docling_logger.addHandler(handler)
+
+    def send_timing(data: dict):
+        job["queue"].put(f"__TIMING__:{_json2.dumps(data)}")
+
+    def send_info(data: dict):
+        job["queue"].put(f"__INFO__:{_json2.dumps(data)}")
+
+    def send_report(data: dict):
+        job["queue"].put(f"__REPORT__:{_json2.dumps(data)}")
+
+    def send_file_status(data: dict):
+        job["queue"].put(f"__FILE_STATUS__:{_json2.dumps(data)}")
+
+    try:
+        from docling.datamodel.settings import settings
+        from docling.datamodel.base_models import ConversionStatus
+
+        settings.debug.profile_pipeline_timings = True
+        settings.perf.doc_batch_size = doc_batch_size_setting
+        settings.perf.doc_batch_concurrency = doc_concurrency
+
+        # Send initial pending status for all files
+        for i, fname in enumerate(filenames):
+            send_file_status({"file_index": i, "file_name": fname, "status": "pending"})
+
+        converter, device = _build_converter(
+            pipeline, ocr, pdf_backend, queue_max_size,
+            do_picture_description, pic_desc_model, vlm_model,
+            layout_batch_size, table_batch_size, ocr_batch_size,
+            table_mode, accelerator, send_info, send_timing,
+            gemini_enrich=gemini_enrich
+        )
+
+        send_info({"multi": True, "file_count": len(sources),
+                    "doc_concurrency": doc_concurrency,
+                    "doc_batch_size": doc_batch_size_setting})
+
+        out_dir = OUTPUTS / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ext = EXT_MAP[fmt]
+
+        # Build a mapping from source path to file index
+        source_to_idx = {}
+        for i, src in enumerate(sources):
+            source_to_idx[str(src)] = i
+
+        success_count = 0
+        fail_count = 0
+
+        for conv_result in converter.convert_all(sources, raises_on_error=False):
+            # Determine which file this result corresponds to
+            input_path = str(conv_result.input.file) if conv_result.input and conv_result.input.file else ""
+            # Try to match by path
+            file_idx = None
+            for src_path, idx in source_to_idx.items():
+                if input_path.endswith(Path(src_path).name) or input_path == src_path:
+                    file_idx = idx
+                    break
+            if file_idx is None:
+                # Fallback: assign by order of successful results
+                file_idx = success_count + fail_count
+
+            fname = filenames[file_idx] if file_idx < len(filenames) else f"file_{file_idx}"
+
+            if conv_result.status == ConversionStatus.SUCCESS:
+                t0 = time.perf_counter()
+
+                # Get page count
+                page_count = len(conv_result.document.pages) if conv_result.document.pages else 0
+
+                # Timings
+                timings = {}
+                for key, item in (conv_result.timings or {}).items():
+                    timings[key] = {
+                        "total": round(item.total(), 2),
+                        "avg": round(float(item.avg()), 2) if item.count > 0 else 0,
+                        "count": item.count,
+                        "scope": item.scope.value,
+                    }
+
+                send_timing({
+                    "stage": "conversion_done",
+                    "file_index": file_idx,
+                    "file_name": fname,
+                    "duration": round(time.perf_counter() - t0, 2),
+                    "page_count": page_count,
+                    "timings": timings,
+                })
+
+                # Reorder if enabled
+                if reorder:
+                    _reorder_body_children(conv_result.document)
+
+                # Build report
+                try:
+                    report = _build_report(conv_result.document)
+                    send_report({"file_index": file_idx, "file_name": fname, "report": report})
+                except Exception:
+                    pass
+
+                # Export
+                text = _export_result(conv_result, fmt, reorder=reorder)
+                result_path = out_dir / f"result_{file_idx}{ext}"
+                result_path.write_text(text, encoding="utf-8")
+
+                # Chunking per file
+                file_chunks = None
+                file_chunks_path = None
+                if do_chunk:
+                    from docling.chunking import HybridChunker
+                    import json as _json3
+                    chunker = HybridChunker(max_tokens=chunk_max_tokens)
+                    chunks_display = []
+                    chunks_full = []
+                    chunk_idx = 0
+                    for chunk in chunker.chunk(conv_result.document):
+                        page = None
+                        if chunk.meta.doc_items:
+                            prov = getattr(chunk.meta.doc_items[0], 'prov', None)
+                            if prov:
+                                page = prov[0].page_no
+                        chunks_display.append({
+                            "index": chunk_idx,
+                            "text": chunk.text,
+                            "headings": chunk.meta.headings or [],
+                            "page": page,
+                        })
+                        chunks_full.append(chunk.model_dump(mode='json'))
+                        chunk_idx += 1
+                    file_chunks = chunks_display
+                    file_chunks_path = out_dir / f"chunks_{file_idx}.json"
+                    file_chunks_path.write_text(_json3.dumps(chunks_full, indent=2), encoding="utf-8")
+
+                # Update job file entry
+                job["files"][file_idx]["status"] = "done"
+                job["files"][file_idx]["page_count"] = page_count
+                job["files"][file_idx]["result_path"] = str(result_path)
+                job["files"][file_idx]["chunks"] = file_chunks
+                job["files"][file_idx]["chunks_path"] = str(file_chunks_path) if file_chunks_path else None
+
+                send_file_status({
+                    "file_index": file_idx,
+                    "file_name": fname,
+                    "status": "done",
+                    "page_count": page_count,
+                })
+                success_count += 1
+
+            else:
+                # FAILURE or PARTIAL_SUCCESS
+                error_msg = str(conv_result.status.value) if hasattr(conv_result.status, 'value') else str(conv_result.status)
+                job["files"][file_idx]["status"] = "error"
+                job["files"][file_idx]["error"] = error_msg
+
+                send_file_status({
+                    "file_index": file_idx,
+                    "file_name": fname,
+                    "status": "error",
+                    "error": error_msg,
+                })
+                fail_count += 1
+
+        # Generate ZIP of all successful results
+        zip_path = out_dir / "results.zip"
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for i, finfo in enumerate(job["files"]):
+                if finfo["status"] == "done" and finfo.get("result_path"):
+                    rp = Path(finfo["result_path"])
+                    if rp.exists():
+                        # Use original filename with new extension
+                        stem = Path(finfo["name"]).stem
+                        zf.write(rp, f"{stem}{ext}")
+                    # Also add chunks if present
+                    if finfo.get("chunks_path"):
+                        cp = Path(finfo["chunks_path"])
+                        if cp.exists():
+                            stem = Path(finfo["name"]).stem
+                            zf.write(cp, f"{stem}_chunks.json")
+
+        job["zip_path"] = str(zip_path)
+
+        # Determine final job status
+        send_timing({"stage": "total", "duration": round(time.perf_counter() - t_total_start, 2)})
+
+        if fail_count == 0:
+            job["status"] = "done"
+        elif success_count == 0:
+            job["status"] = "error"
+            job["error"] = f"All {fail_count} files failed conversion."
+        else:
+            job["status"] = "partial"
+
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+    finally:
+        if free_vram and torch_cuda_available():
+            import gc, torch
+            try:
+                converter.initialized_pipelines.clear()
+            except Exception:
+                pass
+            try:
+                del converter
+            except Exception:
+                pass
+            gc.collect()
+            torch.cuda.empty_cache()
         docling_logger.removeHandler(handler)
         job["queue"].put(None)  # sentinel
 
@@ -645,31 +1156,37 @@ def _run_batched_conversion(source, converter, fmt, batch_size, page_from, page_
         else:
             if reorder:
                 _reorder_body_children(result.document)
-            texts.append(_export_result(result, fmt))
+            texts.append(_export_result(result, fmt, reorder=reorder))
 
     src_pdf.close()
     job["page_count"] = total_page_count
 
-    t0 = time.perf_counter()
     if need_merged_doc and batch_docs:
         # Merge all batch documents into one with correct page numbers and refs
+        t0 = time.perf_counter()
         merged_doc = DoclingDocument.concatenate(batch_docs)
+        send_timing({"stage": "merge_done", "duration": round(time.perf_counter() - t0, 2)})
         if reorder:
+            t0 = time.perf_counter()
             _reorder_body_children(merged_doc)
-        text = _export_result_from_doc(merged_doc, fmt)
+            send_timing({"stage": "reorder_done", "duration": round(time.perf_counter() - t0, 2)})
+        t0 = time.perf_counter()
+        text = _export_result_from_doc(merged_doc, fmt, reorder=reorder)
+        send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
         all_docs = [merged_doc]
     else:
         separator = "\n\n" if fmt in ("md", "doctags") else "\n"
         text = separator.join(texts)
         all_docs = []
-    send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
 
     # Build report from merged doc or first batch
     if send_report:
         try:
+            t0 = time.perf_counter()
             report_doc = all_docs[0] if all_docs else (batch_docs[0] if batch_docs else None)
             if report_doc:
                 send_report(_build_report(report_doc))
+                send_timing({"stage": "report_done", "duration": round(time.perf_counter() - t0, 2)})
         except Exception:
             pass
 
@@ -693,9 +1210,13 @@ def _make_job(fmt: str) -> tuple[str, dict]:
         "format": fmt,
         "chunks": None,
         "chunks_path": None,
+        "prompts_path": None,
         "page_count": 0,
         "error": None,
         "created_at": datetime.utcnow(),
+        "multi": False,
+        "files": [],
+        "zip_path": None,
     }
     return job_id, job
 
@@ -716,6 +1237,7 @@ def get_model_status():
 @app.post("/convert")
 async def convert(
     file: UploadFile | None = None,
+    files: list[UploadFile] = [],
     url: str | None = Form(default=None),
     pipeline: str = Form(default="standard"),
     ocr: bool = Form(default=True),
@@ -731,7 +1253,75 @@ async def convert(
     queue_max_size: int = Form(default=100),
     batch_size: int = Form(default=0),
     reorder: bool = Form(default=True),
+    layout_batch_size: int = Form(default=0),
+    table_batch_size: int = Form(default=0),
+    ocr_batch_size: int = Form(default=0),
+    table_mode: str = Form(default="accurate"),
+    accelerator: str = Form(default="auto"),
+    free_vram: bool = Form(default=False),
+    gemini_enrich: bool = Form(default=False),
+    doc_concurrency: int = Form(default=4),
+    doc_batch_size_setting: int = Form(default=4),
 ):
+    # ---- Multi-file path ----
+    if len(files) > 1:
+        if len(files) > MAX_MULTI_FILES:
+            raise HTTPException(400, f"Maximum {MAX_MULTI_FILES} files allowed.")
+        if pipeline == "vlm" and not torch_cuda_available():
+            raise HTTPException(400, "VLM pipeline requires a CUDA GPU. Switch to standard pipeline.")
+
+        job_id, job = _make_job(format)
+        job["multi"] = True
+        jobs[job_id] = job
+
+        upload_dir = UPLOADS / job_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        total_size = 0
+        saved_sources = []
+        saved_names = []
+        file_entries = []
+
+        for i, f in enumerate(files):
+            content = await f.read()
+            total_size += len(content)
+            if total_size > MAX_BYTES:
+                shutil.rmtree(upload_dir, ignore_errors=True)
+                del jobs[job_id]
+                raise HTTPException(413, f"Total file size exceeds {MAX_UPLOAD_MB}MB limit.")
+
+            fname = f.filename or f"file_{i}.bin"
+            fpath = upload_dir / f"{i}_{fname}"
+            fpath.write_bytes(content)
+            saved_sources.append(str(fpath))
+            saved_names.append(fname)
+            file_entries.append({
+                "name": fname,
+                "status": "pending",
+                "page_count": 0,
+                "result_path": None,
+                "chunks": None,
+                "chunks_path": None,
+                "error": None,
+            })
+
+        job["files"] = file_entries
+
+        executor.submit(
+            _run_multi_conversion, job_id, saved_sources, saved_names,
+            pipeline, ocr, format, do_picture_description, pic_desc_model,
+            vlm_model, do_chunk, chunk_max_tokens, pdf_backend, queue_max_size,
+            reorder, layout_batch_size, table_batch_size, ocr_batch_size,
+            table_mode, accelerator, doc_concurrency, doc_batch_size_setting,
+            free_vram, gemini_enrich
+        )
+        return {"job_id": job_id}
+
+    # ---- Single-file / URL path (unchanged logic) ----
+    # If a single file came via the `files` list, treat it as the `file` param
+    if len(files) == 1 and file is None:
+        file = files[0]
+
     # Validate input
     if file is None and not url:
         raise HTTPException(400, "Provide either a file or a URL.")
@@ -779,7 +1369,7 @@ async def convert(
             raise HTTPException(400, "URL fetch timed out after 30 seconds.")
         source = str(upload_path)
 
-    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder)
+    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder, layout_batch_size, table_batch_size, ocr_batch_size, table_mode, accelerator, free_vram, gemini_enrich)
     return {"job_id": job_id}
 
 
@@ -798,12 +1388,16 @@ async def stream(job_id: str):
                     None, lambda: job["queue"].get(timeout=0.1)
                 )
             except queue.Empty:
-                if job["status"] in ("done", "error"):
+                if job["status"] in ("done", "error", "partial"):
                     # queue fully drained, job already finished before client connected
                     if job["status"] == "error":
                         yield f"event: error\ndata: {job['error']}\n\n"
                     else:
-                        yield f"event: done\ndata: {_json.dumps({'format': job['format']})}\n\n"
+                        done_payload = {"format": job["format"]}
+                        if job["multi"]:
+                            done_payload["multi"] = True
+                            done_payload["file_count"] = len(job["files"])
+                        yield f"event: done\ndata: {_json.dumps(done_payload)}\n\n"
                     return
                 continue
             else:
@@ -811,7 +1405,11 @@ async def stream(job_id: str):
                     if job["status"] == "error":
                         yield f"event: error\ndata: {job['error']}\n\n"
                     else:
-                        yield f"event: done\ndata: {_json.dumps({'format': job['format']})}\n\n"
+                        done_payload = {"format": job["format"]}
+                        if job["multi"]:
+                            done_payload["multi"] = True
+                            done_payload["file_count"] = len(job["files"])
+                        yield f"event: done\ndata: {_json.dumps(done_payload)}\n\n"
                     return
                 safe_msg = msg.replace("\n", " ")
                 if safe_msg.startswith("__TIMING__:"):
@@ -822,6 +1420,10 @@ async def stream(job_id: str):
                     yield f"event: report\ndata: {safe_msg[11:]}\n\n"
                 elif safe_msg.startswith("__INFO_BATCH__:"):
                     yield f"event: log\ndata: {safe_msg[15:]}\n\n"
+                elif safe_msg.startswith("__FILE_STATUS__:"):
+                    yield f"event: file_status\ndata: {safe_msg[16:]}\n\n"
+                elif safe_msg.startswith("__GEMINI__:"):
+                    yield f"event: gemini_log\ndata: {safe_msg[11:]}\n\n"
                 else:
                     yield f"event: log\ndata: {safe_msg}\n\n"
 
@@ -839,7 +1441,7 @@ MIME_MAP = {
 @app.get("/chunks/{job_id}")
 def get_chunks(job_id: str):
     job = jobs.get(job_id)
-    if not job or job["status"] != "done":
+    if not job or job["status"] not in ("done", "partial"):
         raise HTTPException(404, "Result not available.")
     if not job["chunks"]:
         raise HTTPException(404, "Chunking was not enabled for this job.")
@@ -849,7 +1451,7 @@ def get_chunks(job_id: str):
 @app.get("/chunks/{job_id}/download")
 def download_chunks(job_id: str):
     job = jobs.get(job_id)
-    if not job or job["status"] != "done" or not job["chunks_path"]:
+    if not job or job["status"] not in ("done", "partial") or not job["chunks_path"]:
         raise HTTPException(404, "Chunks not available.")
     return FileResponse(
         job["chunks_path"],
@@ -859,11 +1461,80 @@ def download_chunks(job_id: str):
     )
 
 
+@app.get("/prompts/{job_id}/download")
+def download_prompts(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job["status"] not in ("done", "partial") or not job.get("prompts_path"):
+        raise HTTPException(404, "Prompt log not available.")
+    return FileResponse(
+        job["prompts_path"],
+        media_type="application/json",
+        filename="prompts.json",
+        headers={"Content-Disposition": "attachment; filename=prompts.json"},
+    )
+
+
+@app.get("/chunks/{job_id}/{index}")
+def get_chunks_by_index(job_id: str, index: int):
+    """Return chunks for a specific file in a multi-file job."""
+    job = jobs.get(job_id)
+    if not job or job["status"] not in ("done", "partial"):
+        raise HTTPException(404, "Result not available.")
+    if not job["multi"]:
+        raise HTTPException(400, "Not a multi-file job. Use /chunks/{job_id} instead.")
+    if index < 0 or index >= len(job["files"]):
+        raise HTTPException(404, f"File index {index} out of range.")
+    finfo = job["files"][index]
+    if finfo["status"] != "done":
+        raise HTTPException(404, f"File {index} did not complete successfully.")
+    if not finfo.get("chunks"):
+        raise HTTPException(404, "Chunking was not enabled or no chunks for this file.")
+    return {"chunks": finfo["chunks"], "count": len(finfo["chunks"]), "name": finfo["name"]}
+
+
+@app.get("/chunks/{job_id}/{index}/download")
+def download_chunks_by_index(job_id: str, index: int):
+    """Download chunks JSON for a specific file in a multi-file job."""
+    job = jobs.get(job_id)
+    if not job or job["status"] not in ("done", "partial"):
+        raise HTTPException(404, "Result not available.")
+    if not job["multi"]:
+        raise HTTPException(400, "Not a multi-file job. Use /chunks/{job_id}/download instead.")
+    if index < 0 or index >= len(job["files"]):
+        raise HTTPException(404, f"File index {index} out of range.")
+    finfo = job["files"][index]
+    if finfo["status"] != "done" or not finfo.get("chunks_path"):
+        raise HTTPException(404, "Chunks not available for this file.")
+    cp = Path(finfo["chunks_path"])
+    if not cp.exists():
+        raise HTTPException(404, "Chunks file not found on disk.")
+    stem = Path(finfo["name"]).stem
+    fname = f"{stem}_chunks.json"
+    return FileResponse(
+        cp,
+        media_type="application/json",
+        filename=fname,
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
 @app.get("/result/{job_id}")
 def result(job_id: str):
     job = jobs.get(job_id)
-    if not job or job["status"] != "done":
+    if not job or job["status"] not in ("done", "partial"):
         raise HTTPException(404, "Result not available.")
+
+    if job["multi"]:
+        file_summaries = []
+        for finfo in job["files"]:
+            file_summaries.append({
+                "name": finfo["name"],
+                "status": finfo["status"],
+                "format": job["format"],
+                "page_count": finfo.get("page_count", 0),
+            })
+        return {"multi": True, "files": file_summaries, "format": job["format"]}
+
     page_count = job.get("page_count", 0)
     if page_count > 20:
         return {"content": "", "format": job["format"], "page_count": page_count}
@@ -871,11 +1542,49 @@ def result(job_id: str):
     return {"content": content, "format": job["format"], "page_count": page_count}
 
 
+@app.get("/result/{job_id}/{index}")
+def result_by_index(job_id: str, index: int):
+    """Return individual file content for a multi-file job."""
+    job = jobs.get(job_id)
+    if not job or job["status"] not in ("done", "partial"):
+        raise HTTPException(404, "Result not available.")
+    if not job["multi"]:
+        raise HTTPException(400, "Not a multi-file job. Use /result/{job_id} instead.")
+    if index < 0 or index >= len(job["files"]):
+        raise HTTPException(404, f"File index {index} out of range.")
+    finfo = job["files"][index]
+    if finfo["status"] != "done":
+        raise HTTPException(404, f"File {index} did not complete successfully.")
+    rp = Path(finfo["result_path"])
+    if not rp.exists():
+        raise HTTPException(404, "Result file not found on disk.")
+    page_count = finfo.get("page_count", 0)
+    content = rp.read_text(encoding="utf-8")
+    return {
+        "content": content,
+        "format": job["format"],
+        "page_count": page_count,
+        "name": finfo["name"],
+    }
+
+
 @app.get("/download/{job_id}")
 def download(job_id: str):
     job = jobs.get(job_id)
-    if not job or job["status"] != "done":
+    if not job or job["status"] not in ("done", "partial"):
         raise HTTPException(404, "Result not available.")
+
+    if job["multi"]:
+        zip_path = job.get("zip_path")
+        if not zip_path or not Path(zip_path).exists():
+            raise HTTPException(404, "ZIP file not available.")
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename="results.zip",
+            headers={"Content-Disposition": "attachment; filename=results.zip"},
+        )
+
     path = job["result_path"]
     mime = MIME_MAP.get(path.suffix, "text/plain")
     return FileResponse(
@@ -883,6 +1592,34 @@ def download(job_id: str):
         media_type=mime,
         filename=f"result{path.suffix}",
         headers={"Content-Disposition": f"attachment; filename=result{path.suffix}"},
+    )
+
+
+@app.get("/download/{job_id}/{index}")
+def download_by_index(job_id: str, index: int):
+    """Download individual file result by index in a multi-file job."""
+    job = jobs.get(job_id)
+    if not job or job["status"] not in ("done", "partial"):
+        raise HTTPException(404, "Result not available.")
+    if not job["multi"]:
+        raise HTTPException(400, "Not a multi-file job. Use /download/{job_id} instead.")
+    if index < 0 or index >= len(job["files"]):
+        raise HTTPException(404, f"File index {index} out of range.")
+    finfo = job["files"][index]
+    if finfo["status"] != "done":
+        raise HTTPException(404, f"File {index} did not complete successfully.")
+    rp = Path(finfo["result_path"])
+    if not rp.exists():
+        raise HTTPException(404, "Result file not found on disk.")
+    ext = EXT_MAP[job["format"]]
+    mime = MIME_MAP.get(ext, "text/plain")
+    stem = Path(finfo["name"]).stem
+    fname = f"{stem}{ext}"
+    return FileResponse(
+        rp,
+        media_type=mime,
+        filename=fname,
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
     )
 
 

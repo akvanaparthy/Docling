@@ -1,0 +1,2100 @@
+{
+  "schema_name": "DoclingDocument",
+  "version": "1.10.0",
+  "name": "8e86cc10-a571-48cd-bc45-335ffd1936eb",
+  "origin": {
+    "mimetype": "application/pdf",
+    "binary_hash": 10581558962983437139,
+    "filename": "8e86cc10-a571-48cd-bc45-335ffd1936eb.pdf",
+    "uri": null
+  },
+  "furniture": {
+    "self_ref": "#/furniture",
+    "parent": null,
+    "children": [],
+    "content_layer": "furniture",
+    "meta": null,
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "body": {
+    "self_ref": "#/body",
+    "parent": null,
+    "children": [
+      {
+        "cref": "#/texts/0"
+      },
+      {
+        "cref": "#/texts/1"
+      },
+      {
+        "cref": "#/texts/2"
+      },
+      {
+        "cref": "#/texts/3"
+      },
+      {
+        "cref": "#/texts/4"
+      },
+      {
+        "cref": "#/pictures/0"
+      },
+      {
+        "cref": "#/groups/0"
+      },
+      {
+        "cref": "#/texts/19"
+      },
+      {
+        "cref": "#/texts/20"
+      },
+      {
+        "cref": "#/texts/21"
+      },
+      {
+        "cref": "#/texts/22"
+      },
+      {
+        "cref": "#/texts/23"
+      },
+      {
+        "cref": "#/texts/24"
+      },
+      {
+        "cref": "#/groups/1"
+      },
+      {
+        "cref": "#/texts/28"
+      },
+      {
+        "cref": "#/texts/29"
+      },
+      {
+        "cref": "#/texts/30"
+      },
+      {
+        "cref": "#/pictures/1"
+      },
+      {
+        "cref": "#/texts/47"
+      },
+      {
+        "cref": "#/texts/48"
+      },
+      {
+        "cref": "#/groups/6"
+      },
+      {
+        "cref": "#/texts/52"
+      },
+      {
+        "cref": "#/texts/53"
+      }
+    ],
+    "content_layer": "body",
+    "meta": null,
+    "name": "_root_",
+    "label": "unspecified"
+  },
+  "groups": [
+    {
+      "self_ref": "#/groups/0",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [
+        {
+          "cref": "#/texts/12"
+        },
+        {
+          "cref": "#/texts/13"
+        },
+        {
+          "cref": "#/texts/14"
+        },
+        {
+          "cref": "#/texts/15"
+        },
+        {
+          "cref": "#/texts/16"
+        },
+        {
+          "cref": "#/texts/17"
+        },
+        {
+          "cref": "#/texts/18"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "list",
+      "label": "list"
+    },
+    {
+      "self_ref": "#/groups/1",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [
+        {
+          "cref": "#/texts/25"
+        },
+        {
+          "cref": "#/texts/26"
+        },
+        {
+          "cref": "#/texts/27"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "list",
+      "label": "list"
+    },
+    {
+      "self_ref": "#/groups/2",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [
+        {
+          "cref": "#/texts/39"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "group",
+      "label": "list"
+    },
+    {
+      "self_ref": "#/groups/3",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [
+        {
+          "cref": "#/texts/40"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "group",
+      "label": "list"
+    },
+    {
+      "self_ref": "#/groups/4",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [
+        {
+          "cref": "#/texts/41"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "group",
+      "label": "list"
+    },
+    {
+      "self_ref": "#/groups/5",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [
+        {
+          "cref": "#/texts/44"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "group",
+      "label": "list"
+    },
+    {
+      "self_ref": "#/groups/6",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [
+        {
+          "cref": "#/texts/49"
+        },
+        {
+          "cref": "#/texts/50"
+        },
+        {
+          "cref": "#/texts/51"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "name": "list",
+      "label": "list"
+    }
+  ],
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "meta": null,
+      "label": "page_header",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 72.00143999999999,
+            "t": 756.20297,
+            "r": 253.42944,
+            "b": 742.81097,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            32
+          ]
+        }
+      ],
+      "orig": "Carestation 620/650/650c (A1/A2)",
+      "text": "Carestation 620/650/650c (A1/A2)",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/1",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 72.0,
+            "t": 721.37062,
+            "r": 214.27200000000002,
+            "b": 703.51462,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            19
+          ]
+        }
+      ],
+      "orig": "1.6 Display control",
+      "text": "1.6 Display control",
+      "formatting": null,
+      "hyperlink": null,
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/2",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 198.00200999999998,
+            "t": 685.16914,
+            "r": 524.8120099999999,
+            "b": 662.00914,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            114
+          ]
+        }
+      ],
+      "orig": "The system uses touchscreen technology, hard keys, and a ComWheel to access system functions, menus, and settings.",
+      "text": "The system uses touchscreen technology, hard keys, and a ComWheel to access system functions, menus, and settings.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/3",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 121.34543,
+            "t": 654.40297,
+            "r": 180.00142999999997,
+            "b": 641.01097,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            7
+          ]
+        }
+      ],
+      "orig": "WARNING",
+      "text": "WARNING",
+      "formatting": null,
+      "hyperlink": null,
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/4",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 197.99403999999998,
+            "t": 654.40297,
+            "r": 534.8100900000004,
+            "b": 593.01097,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            250
+          ]
+        }
+      ],
+      "orig": "Liquids on the display may degrade the performance of the touchscreen. If liquids come in contact with the display, lock the touchscreen and clean the display. Unlock the touchscreen once the display has been cleaned to resume use of the touchscreen.",
+      "text": "Liquids on the display may degrade the performance of the touchscreen. If liquids come in contact with the display, lock the touchscreen and clean the display. Unlock the touchscreen once the display has been cleaned to resume use of the touchscreen.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/5",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 264.06137664115,
+            "t": 372.16847392673003,
+            "r": 269.4328440669745,
+            "b": 362.46844828373,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "6",
+      "text": "6",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/6",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 239.31481234946997,
+            "t": 372.16847392673003,
+            "r": 244.68627977529448,
+            "b": 362.46844828373,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "5",
+      "text": "5",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/7",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 286.62070297223,
+            "t": 372.40991223923004,
+            "r": 291.9921703980545,
+            "b": 362.70988659623004,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "4",
+      "text": "4",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/8",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 309.51773389976995,
+            "t": 372.40991223923004,
+            "r": 314.88920132559446,
+            "b": 362.70988659623004,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "3",
+      "text": "3",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/9",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 405.5933068956301,
+            "t": 425.976491160502,
+            "r": 411.804872798015,
+            "b": 402.3179390634264,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            9
+          ]
+        }
+      ],
+      "orig": "AC.24.052",
+      "text": "AC.24.052",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/10",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 332.96076272418213,
+            "t": 372.40991223923004,
+            "r": 338.33223015000664,
+            "b": 362.70988659623004,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "2",
+      "text": "2",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/11",
+      "parent": {
+        "cref": "#/pictures/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 372.1388611182321,
+            "t": 373.02856089447,
+            "r": 377.5103285440566,
+            "b": 363.32853525147,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "1",
+      "text": "1",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/12",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 73.99727999999999,
+            "t": 356.5731,
+            "r": 137.22227999999998,
+            "b": 346.5291,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            11
+          ]
+        },
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 176.95727999999997,
+            "t": 356.5731,
+            "r": 521.5582800000001,
+            "b": 334.52909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            126
+          ]
+        }
+      ],
+      "orig": "1. ComWheel Selects a menu item or confirms a setting. Turn clockwise or counterclockwise to scroll through menu items or change settings.",
+      "text": "ComWheel Selects a menu item or confirms a setting. Turn clockwise or counterclockwise to scroll through menu items or change settings.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "1."
+    },
+    {
+      "self_ref": "#/texts/13",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 73.99730999999998,
+            "t": 329.5731,
+            "r": 323.50431,
+            "b": 319.5291,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            46
+          ]
+        }
+      ],
+      "orig": "2. Home key Removes all menus from the screen.",
+      "text": "Home key Removes all menus from the screen.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "2."
+    },
+    {
+      "self_ref": "#/texts/14",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 73.99731999999999,
+            "t": 314.5731,
+            "r": 446.0933299999999,
+            "b": 304.5291,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            87
+          ]
+        }
+      ],
+      "orig": "3. Screen Lock/Unlock Locks the touchscreen. Toggles between lock and unlock functions.",
+      "text": "Screen Lock/Unlock Locks the touchscreen. Toggles between lock and unlock functions.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "3."
+    },
+    {
+      "self_ref": "#/texts/15",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 92.71731999999999,
+            "t": 302.5731,
+            "r": 106.72131999999999,
+            "b": 292.52909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            3
+          ]
+        }
+      ],
+      "orig": "key",
+      "text": "key",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": false,
+      "marker": ""
+    },
+    {
+      "self_ref": "#/texts/16",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 73.99730999999998,
+            "t": 287.5731,
+            "r": 318.52732,
+            "b": 277.52909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            59
+          ]
+        }
+      ],
+      "orig": "4. Start/End Case key Initiates Start or End Case function.",
+      "text": "Start/End Case key Initiates Start or End Case function.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "4."
+    },
+    {
+      "self_ref": "#/texts/17",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 73.99732999999999,
+            "t": 272.57310000000007,
+            "r": 436.58932999999996,
+            "b": 262.52909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            79
+          ]
+        }
+      ],
+      "orig": "5. Touchscreen Activates functions when touch areas on the screen are selected.",
+      "text": "Touchscreen Activates functions when touch areas on the screen are selected.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "5."
+    },
+    {
+      "self_ref": "#/texts/18",
+      "parent": {
+        "cref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 73.99734999999998,
+            "t": 257.57310000000007,
+            "r": 160.25334999999998,
+            "b": 247.52909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            18
+          ]
+        },
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 176.95735,
+            "t": 257.57310000000007,
+            "r": 534.1043600000002,
+            "b": 211.52909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            268
+          ]
+        }
+      ],
+      "orig": "6. Audio Pause key Stops audio for 120 seconds for any active, eligible high and medium priority alarms. Prevents audio (audio off) for 90 seconds when no medium or high priority alarms are active. Allows the operator to acknowledge any non-active medium or high priority latched alarms.",
+      "text": "Audio Pause key Stops audio for 120 seconds for any active, eligible high and medium priority alarms. Prevents audio (audio off) for 90 seconds when no medium or high priority alarms are active. Allows the operator to acknowledge any non-active medium or high priority latched alarms.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "6."
+    },
+    {
+      "self_ref": "#/texts/19",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "caption",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 71.99939999999998,
+            "t": 191.19000999999992,
+            "r": 197.19940000000003,
+            "b": 180.03000999999995,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            29
+          ]
+        }
+      ],
+      "orig": "Figure 1-6 \u00b7 Display controls",
+      "text": "Figure 1-6 \u00b7 Display controls",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/20",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 108.00538999999998,
+            "t": 140.15766999999994,
+            "r": 230.92539,
+            "b": 124.53367000000003,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            18
+          ]
+        }
+      ],
+      "orig": "1.6.1 Touch points",
+      "text": "1.6.1 Touch points",
+      "formatting": null,
+      "hyperlink": null,
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/21",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 197.99538,
+            "t": 106.19000999999992,
+            "r": 512.0353799999998,
+            "b": 83.03000999999995,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            101
+          ]
+        }
+      ],
+      "orig": "The touchscreen has numerous touch point areas that make accessing menus and settings quick and easy.",
+      "text": "The touchscreen has numerous touch point areas that make accessing menus and settings quick and easy.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/22",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "meta": null,
+      "label": "page_footer",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 71.99942999999999,
+            "t": 47.96914000000004,
+            "r": 92.00942999999998,
+            "b": 36.80913999999996,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            4
+          ]
+        }
+      ],
+      "orig": "1-14",
+      "text": "1-14",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/23",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "meta": null,
+      "label": "page_footer",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 468.37745,
+            "t": 46.15913999999998,
+            "r": 539.9854499999997,
+            "b": 37.23113999999998,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            18
+          ]
+        }
+      ],
+      "orig": "2076163-001  12 14",
+      "text": "2076163-001  12 14",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/24",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "meta": null,
+      "label": "page_header",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 467.28214,
+            "t": 756.20297,
+            "r": 539.9901400000002,
+            "b": 742.81097,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            14
+          ]
+        }
+      ],
+      "orig": "1 Introduction",
+      "text": "1 Introduction",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/25",
+      "parent": {
+        "cref": "#/groups/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 198.0,
+            "t": 714.16914,
+            "r": 538.5499999999997,
+            "b": 691.00914,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            101
+          ]
+        }
+      ],
+      "orig": "\u00b7 The function keys on the right side of the screen provide direct access to commonly used functions.",
+      "text": "The function keys on the right side of the screen provide direct access to commonly used functions.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": false,
+      "marker": "\u00b7"
+    },
+    {
+      "self_ref": "#/texts/26",
+      "parent": {
+        "cref": "#/groups/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99997,
+            "t": 688.16914,
+            "r": 486.85996999999986,
+            "b": 677.00914,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            63
+          ]
+        }
+      ],
+      "orig": "\u00b7 The ventilation quick keys enable setup of ventilation modes.",
+      "text": "The ventilation quick keys enable setup of ventilation modes.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": false,
+      "marker": "\u00b7"
+    },
+    {
+      "self_ref": "#/texts/27",
+      "parent": {
+        "cref": "#/groups/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99997,
+            "t": 674.16914,
+            "r": 531.8899699999997,
+            "b": 651.00914,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            80
+          ]
+        }
+      ],
+      "orig": "\u00b7 The gas control quick keys provide a method to set up the gas used for a case.",
+      "text": "The gas control quick keys provide a method to set up the gas used for a case.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": false,
+      "marker": "\u00b7"
+    },
+    {
+      "self_ref": "#/texts/28",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99993999999998,
+            "t": 642.16914,
+            "r": 536.4999399999997,
+            "b": 631.00914,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            77
+          ]
+        }
+      ],
+      "orig": "Touch only one touch point at a time to ensure the correct selection is made.",
+      "text": "Touch only one touch point at a time to ensure the correct selection is made.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/29",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 125.34216,
+            "t": 623.40297,
+            "r": 180.00216,
+            "b": 610.01097,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            7
+          ]
+        }
+      ],
+      "orig": "CAUTION",
+      "text": "CAUTION",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/30",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 198.00397999999998,
+            "t": 623.40297,
+            "r": 516.1599800000005,
+            "b": 598.01097,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            68
+          ]
+        }
+      ],
+      "orig": "Do not apply excessive force to the touchscreen as damage may occur.",
+      "text": "Do not apply excessive force to the touchscreen as damage may occur.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/31",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "caption",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 71.99602,
+            "t": 242.69001000000003,
+            "r": 368.93602,
+            "b": 231.53000999999995,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            66
+          ]
+        }
+      ],
+      "orig": "Figure 1-7 \u00b7 Normal/Full screen view with shaded touch point areas",
+      "text": "Figure 1-7 \u00b7 Normal/Full screen view with shaded touch point areas",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/32",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 453.53268345328,
+            "t": 361.01997266625,
+            "r": 460.06479383128004,
+            "b": 333.36386017875,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            9
+          ]
+        }
+      ],
+      "orig": "AC.24.050",
+      "text": "AC.24.050",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/33",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 403.01538128586003,
+            "t": 577.33203049078,
+            "r": 407.89690463286,
+            "b": 567.53386492378,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "2",
+      "text": "2",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/34",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 274.26899454632,
+            "t": 577.33203049078,
+            "r": 279.15051789332,
+            "b": 567.53386492378,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "1",
+      "text": "1",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/35",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 475.47465614291,
+            "t": 465.30965429053,
+            "r": 480.35617948991,
+            "b": 455.51148872352996,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "3",
+      "text": "3",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/36",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 475.47465614291,
+            "t": 371.8250743641,
+            "r": 480.35617948991,
+            "b": 362.02690879709996,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "4",
+      "text": "4",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/37",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 351.14967047912,
+            "t": 309.43629242368,
+            "r": 356.03119382612,
+            "b": 299.63812685668,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "5",
+      "text": "5",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/38",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 131.06700331649998,
+            "t": 456.6547120956,
+            "r": 135.9485266635,
+            "b": 446.8565465286,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            1
+          ]
+        }
+      ],
+      "orig": "6",
+      "text": "6",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/39",
+      "parent": {
+        "cref": "#/groups/2"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 73.998,
+            "t": 295.0731,
+            "r": 143.19,
+            "b": 285.0291,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            14
+          ]
+        }
+      ],
+      "orig": "1. Wave fields",
+      "text": "Wave fields",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "1."
+    },
+    {
+      "self_ref": "#/texts/40",
+      "parent": {
+        "cref": "#/groups/3"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 307.99798,
+            "t": 295.0731,
+            "r": 372.18598,
+            "b": 285.0291,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            15
+          ]
+        }
+      ],
+      "orig": "4. Digit fields",
+      "text": "Digit fields",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "4."
+    },
+    {
+      "self_ref": "#/texts/41",
+      "parent": {
+        "cref": "#/groups/4"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 73.998,
+            "t": 283.0731,
+            "r": 165.204,
+            "b": 273.02909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            18
+          ]
+        }
+      ],
+      "orig": "2. Measured values",
+      "text": "Measured values",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "2."
+    },
+    {
+      "self_ref": "#/texts/42",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 307.99798,
+            "t": 283.0731,
+            "r": 315.50398,
+            "b": 273.02909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            2
+          ]
+        }
+      ],
+      "orig": "5.",
+      "text": "5.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/43",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 330.67798,
+            "t": 283.0731,
+            "r": 413.20798,
+            "b": 273.02909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            21
+          ]
+        }
+      ],
+      "orig": "Ventilator quick keys",
+      "text": "Ventilator quick keys",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/44",
+      "parent": {
+        "cref": "#/groups/5"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 73.99801,
+            "t": 271.07310000000007,
+            "r": 152.19901,
+            "b": 261.02909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            16
+          ]
+        }
+      ],
+      "orig": "3. Function keys",
+      "text": "Function keys",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "3."
+    },
+    {
+      "self_ref": "#/texts/45",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 307.99799,
+            "t": 271.07310000000007,
+            "r": 315.50399,
+            "b": 261.02909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            2
+          ]
+        }
+      ],
+      "orig": "6.",
+      "text": "6.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/46",
+      "parent": {
+        "cref": "#/pictures/1"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 330.67799,
+            "t": 271.07310000000007,
+            "r": 406.20599000000004,
+            "b": 261.02909999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            19
+          ]
+        }
+      ],
+      "orig": "Split screen values",
+      "text": "Split screen values",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/47",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "section_header",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99603000000002,
+            "t": 208.72383000000002,
+            "r": 363.36803000000003,
+            "b": 195.33182999999997,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            27
+          ]
+        }
+      ],
+      "orig": "Measured value touch points",
+      "text": "Measured value touch points",
+      "formatting": null,
+      "hyperlink": null,
+      "level": 1
+    },
+    {
+      "self_ref": "#/texts/48",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "text",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99805,
+            "t": 188.28999,
+            "r": 529.2680499999999,
+            "b": 165.12999000000002,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            82
+          ]
+        }
+      ],
+      "orig": "Touching measured values provides access to the Alarm Setup menu and alarm limits.",
+      "text": "Touching measured values provides access to the Alarm Setup menu and alarm limits.",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/49",
+      "parent": {
+        "cref": "#/groups/6"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99805000000003,
+            "t": 143.28999,
+            "r": 490.19804999999997,
+            "b": 132.12999000000002,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            59
+          ]
+        }
+      ],
+      "orig": "1. Touch the measured value to access the Alarm Setup menu.",
+      "text": "Touch the measured value to access the Alarm Setup menu.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "1."
+    },
+    {
+      "self_ref": "#/texts/50",
+      "parent": {
+        "cref": "#/groups/6"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99808000000002,
+            "t": 128.28999,
+            "r": 366.2180600000001,
+            "b": 117.12999000000002,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            33
+          ]
+        }
+      ],
+      "orig": "2. The Alarm Setup menu displays.",
+      "text": "The Alarm Setup menu displays.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "2."
+    },
+    {
+      "self_ref": "#/texts/51",
+      "parent": {
+        "cref": "#/groups/6"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": null,
+      "label": "list_item",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 197.99809000000005,
+            "t": 113.28998999999999,
+            "r": 532.4280899999997,
+            "b": 90.12999000000002,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            146
+          ]
+        }
+      ],
+      "orig": "3. Select the alarm limit and set it to the correct value. Touch the value on the touchscreen or push the ComWheel to confirm the desired setting.",
+      "text": "Select the alarm limit and set it to the correct value. Touch the value on the touchscreen or push the ComWheel to confirm the desired setting.",
+      "formatting": null,
+      "hyperlink": null,
+      "enumerated": true,
+      "marker": "3."
+    },
+    {
+      "self_ref": "#/texts/52",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "meta": null,
+      "label": "page_footer",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 519.98615,
+            "t": 47.96914000000004,
+            "r": 539.99615,
+            "b": 36.80913999999996,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            4
+          ]
+        }
+      ],
+      "orig": "1-15",
+      "text": "1-15",
+      "formatting": null,
+      "hyperlink": null
+    },
+    {
+      "self_ref": "#/texts/53",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "meta": null,
+      "label": "page_footer",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 71.99817,
+            "t": 46.15913999999998,
+            "r": 143.60617000000002,
+            "b": 37.23113999999998,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            18
+          ]
+        }
+      ],
+      "orig": "12 14  2076163-001",
+      "text": "12 14  2076163-001",
+      "formatting": null,
+      "hyperlink": null
+    }
+  ],
+  "pictures": [
+    {
+      "self_ref": "#/pictures/0",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [
+        {
+          "cref": "#/texts/5"
+        },
+        {
+          "cref": "#/texts/6"
+        },
+        {
+          "cref": "#/texts/7"
+        },
+        {
+          "cref": "#/texts/8"
+        },
+        {
+          "cref": "#/texts/9"
+        },
+        {
+          "cref": "#/texts/10"
+        },
+        {
+          "cref": "#/texts/11"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "label": "picture",
+      "prov": [
+        {
+          "page_no": 30,
+          "bbox": {
+            "l": 198.33468627929688,
+            "t": 572.4071502685547,
+            "r": 412.1325378417969,
+            "b": 363.3961486816406,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ],
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "image": {
+        "mimetype": "image/png",
+        "dpi": 72,
+        "size": {
+          "width": 214.0,
+          "height": 209.0
+        },
+        "uri": "data:image/png;base64,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"
+      },
+      "annotations": []
+    },
+    {
+      "self_ref": "#/pictures/1",
+      "parent": {
+        "cref": "#/body"
+      },
+      "children": [
+        {
+          "cref": "#/texts/31"
+        },
+        {
+          "cref": "#/texts/32"
+        },
+        {
+          "cref": "#/texts/33"
+        },
+        {
+          "cref": "#/texts/34"
+        },
+        {
+          "cref": "#/texts/35"
+        },
+        {
+          "cref": "#/texts/36"
+        },
+        {
+          "cref": "#/texts/37"
+        },
+        {
+          "cref": "#/texts/38"
+        },
+        {
+          "cref": "#/groups/2"
+        },
+        {
+          "cref": "#/groups/3"
+        },
+        {
+          "cref": "#/groups/4"
+        },
+        {
+          "cref": "#/texts/42"
+        },
+        {
+          "cref": "#/texts/43"
+        },
+        {
+          "cref": "#/groups/5"
+        },
+        {
+          "cref": "#/texts/45"
+        },
+        {
+          "cref": "#/texts/46"
+        }
+      ],
+      "content_layer": "body",
+      "meta": null,
+      "label": "picture",
+      "prov": [
+        {
+          "page_no": 31,
+          "bbox": {
+            "l": 73.01290130615234,
+            "t": 577.7174987792969,
+            "r": 481.3212890625,
+            "b": 259.1923828125,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ],
+      "captions": [
+        {
+          "cref": "#/texts/31"
+        }
+      ],
+      "references": [],
+      "footnotes": [],
+      "image": {
+        "mimetype": "image/png",
+        "dpi": 72,
+        "size": {
+          "width": 408.0,
+          "height": 319.0
+        },
+        "uri": "data:image/png;base64,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"
+      },
+      "annotations": []
+    }
+  ],
+  "tables": [],
+  "key_value_items": [],
+  "form_items": [],
+  "pages": {
+    "30": {
+      "size": {
+        "width": 612.0,
+        "height": 792.0
+      },
+      "image": null,
+      "page_no": 30
+    },
+    "31": {
+      "size": {
+        "width": 612.0,
+        "height": 792.0
+      },
+      "image": null,
+      "page_no": 31
+    }
+  }
+}
