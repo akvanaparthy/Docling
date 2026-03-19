@@ -42,6 +42,13 @@ VERTEX_LOCATION      = os.environ.get("VERTEX_LOCATION", "us-central1")
 GEMINI_MODEL         = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
 ENRICHER_CONCURRENCY = int(os.environ.get("ENRICHER_CONCURRENCY", "10"))
 
+# Gemini 2.5 Flash pricing ($/1M tokens) — override via .env if rates change
+# Source: GCP official pricing for gemini-2.5-flash
+# Input  (text, image, video): $0.30/1M — same for <=200K and >200K context
+# Output (text + reasoning):   $3.00/1M — same for <=200K and >200K context
+GEMINI_INPUT_PRICE_PER_M  = float(os.environ.get("GEMINI_INPUT_PRICE_PER_M",  "0.30"))
+GEMINI_OUTPUT_PRICE_PER_M = float(os.environ.get("GEMINI_OUTPUT_PRICE_PER_M", "3.00"))
+
 _TYPE_HINTS = {
     "figure":      "diagram or technical figure",
     "chart":       "chart or graph",
@@ -73,9 +80,9 @@ def _is_rate_limit(exc: BaseException) -> bool:
     stop=stop_after_attempt(6),
     reraise=True,
 )
-async def _call_gemini(client, model: str, contents) -> str:
+async def _call_gemini(client, model: str, contents):
     resp = await client.aio.models.generate_content(model=model, contents=contents)
-    return resp.text
+    return resp
 
 
 # ── Document tree helpers ──────────────────────────────────────────────────────
@@ -313,7 +320,7 @@ async def _enrich_picture(client, doc, pic_item, flat: list,
     async with sem:
         try:
             from google.genai import types
-            response_text = await _call_gemini(
+            resp = await _call_gemini(
                 client, model,
                 [
                     types.Part.from_bytes(
@@ -323,6 +330,10 @@ async def _enrich_picture(client, doc, pic_item, flat: list,
                     types.Part.from_text(text=prompt),
                 ],
             )
+            response_text = resp.text
+            usage = resp.usage_metadata
+            entry["input_tokens"]  = getattr(usage, "prompt_token_count", 0) or 0
+            entry["output_tokens"] = getattr(usage, "candidates_token_count", 0) or 0
             description = _parse_response(response_text)
             entry["response"] = response_text
 
@@ -366,7 +377,7 @@ async def _enrich_async(doc, filename: str,
     pictures = [p for p in doc.pictures if p.self_ref in pic_positions]
     if not pictures:
         log.info("No pictures with images found — skipping Gemini enrichment")
-        return 0, []
+        return 0, [], {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 
     log.info("Gemini enrichment: %d pictures → %s (concurrency=%d)", len(pictures), model, concurrency)
 
@@ -377,7 +388,23 @@ async def _enrich_async(doc, filename: str,
         for pic in pictures
     ]
     await asyncio.gather(*tasks, return_exceptions=True)
-    return len(pictures), prompt_log
+
+    # Sum token usage and compute cost
+    input_tokens  = sum(e.get("input_tokens",  0) for e in prompt_log)
+    output_tokens = sum(e.get("output_tokens", 0) for e in prompt_log)
+    cost_usd = (
+        (input_tokens  / 1_000_000) * GEMINI_INPUT_PRICE_PER_M +
+        (output_tokens / 1_000_000) * GEMINI_OUTPUT_PRICE_PER_M
+    )
+    token_stats = {
+        "input_tokens":  input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd":      round(cost_usd, 6),
+    }
+    log.info("Token usage — input: %d  output: %d  cost: $%.6f",
+             input_tokens, output_tokens, cost_usd)
+
+    return len(pictures), prompt_log, token_stats
 
 
 def enrich(doc, filename: str = "document.pdf",
@@ -387,9 +414,7 @@ def enrich(doc, filename: str = "document.pdf",
            concurrency: int = ENRICHER_CONCURRENCY) -> tuple:
     """Synchronous wrapper — call from _run_conversion thread.
 
-    Enriches all pictures in *doc* in-place with Gemini Vision descriptions.
-    Returns (n_pictures, prompt_log) where prompt_log is a list of dicts
-    containing picture_ref, page, classification, section, caption, prompt,
-    response, and error for each picture processed.
+    Returns (n_pictures, prompt_log, token_stats) where token_stats has
+    input_tokens, output_tokens, cost_usd.
     """
     return asyncio.run(_enrich_async(doc, filename, project, location, model, concurrency))

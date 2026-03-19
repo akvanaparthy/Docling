@@ -426,8 +426,20 @@ function handleTiming(data) {
       addTimingRow('Gemini Enrich', 'ERROR: ' + data.error);
     } else {
       addTimingRow('Gemini Enrich', data.duration + 's');
-      addTimingRow('  Pictures', data.pictures);
+      addTimingRow('  Pictures enriched', data.pictures);
+      if (data.images_saved_pictures) addTimingRow('  Pics saved', data.images_saved_pictures);
+      if (data.images_saved_tables)   addTimingRow('  Tables saved', data.images_saved_tables);
+      if (data.input_tokens != null) {
+        addTimingRow('  Tokens in', data.input_tokens.toLocaleString());
+        addTimingRow('  Tokens out', data.output_tokens.toLocaleString());
+        addTimingRow('  API cost', '$' + data.cost_usd.toFixed(6));
+      }
     }
+
+  } else if (s === 'images_saved') {
+    addTimingRow('Images saved', data.duration + 's');
+    if (data.pictures) addTimingRow('  Pictures', data.pictures);
+    if (data.tables)   addTimingRow('  Tables',   data.tables);
 
   } else if (s === 'reorder_done') {
     addTimingRow(filePrefix + 'Reorder', data.duration + 's');
@@ -764,6 +776,7 @@ async function startConvert() {
   fd.append('ocr_batch_size', document.getElementById('ocr-batch-size').value || 0);
   fd.append('reorder', document.getElementById('reorder').checked);
   fd.append('free_vram', document.getElementById('free-vram').checked);
+  fd.append('save_images', document.getElementById('save-images').checked);
   fd.append('gemini_enrich', document.getElementById('gemini-enrich').checked);
   fd.append('doc_concurrency', document.getElementById('doc-concurrency').value);
   fd.append('doc_batch_size_setting', document.getElementById('doc-concurrency').value);

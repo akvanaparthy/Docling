@@ -515,11 +515,129 @@ def _reindex_json_reading_order(data: dict) -> dict:
     return rewrite(data)
 
 
-def _export_result(result, fmt: str, reorder: bool = False) -> str:
-    return _export_result_from_doc(result.document, fmt, reorder=reorder)
+def _render_pdf_pages(source_path: str, page_nos: set, scale: float = 2.0) -> dict:
+    """Render specific pages from a PDF using pypdfium2. Returns {page_no: PIL.Image}."""
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(source_path)
+        result = {}
+        for page_no in page_nos:
+            idx = page_no - 1  # pypdfium2 is 0-indexed
+            if 0 <= idx < len(pdf):
+                bitmap = pdf[idx].render(scale=scale)
+                result[page_no] = bitmap.to_pil()
+        pdf.close()
+        return result
+    except Exception:
+        return {}
 
 
-def _export_result_from_doc(doc, fmt: str, reorder: bool = False) -> str:
+def _crop_from_page(pil_page, bbox, page_size) -> "PIL.Image.Image | None":
+    """Crop a region from a rendered page image using a Docling bbox."""
+    try:
+        page_w = page_size.width
+        page_h = page_size.height
+        img_w, img_h = pil_page.size
+        sx = img_w / page_w
+        sy = img_h / page_h
+
+        l, t, r, b = bbox.l, bbox.t, bbox.r, bbox.b
+        origin = str(getattr(bbox, "coord_origin", "")).upper()
+        if "BOTTOMLEFT" in origin:
+            # convert to top-left origin
+            t, b = page_h - bbox.t, page_h - bbox.b
+
+        left   = min(l, r) * sx
+        right  = max(l, r) * sx
+        top    = min(t, b) * sy
+        bottom = max(t, b) * sy
+
+        if right <= left or bottom <= top:
+            return None
+        return pil_page.crop((left, top, right, bottom))
+    except Exception:
+        return None
+
+
+def _save_item_images(doc, out_dir: Path, source_path: str = None) -> dict:
+    """Crop and save images for all pictures and tables.
+
+    Pictures: uses pic.get_image(doc) which reads from the stored picture image.
+    Tables:   re-renders the source PDF page via pypdfium2 and crops via bbox,
+              since page.image is not persisted in the DoclingDocument after conversion.
+    Returns {self_ref: relative_path_str} for items saved successfully.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    pics_dir = out_dir / "pictures"
+    tabs_dir = out_dir / "tables"
+    pics_dir.mkdir(parents=True, exist_ok=True)
+    tabs_dir.mkdir(parents=True, exist_ok=True)
+    path_map = {}
+
+    # ── Pictures (use stored image from Docling pipeline) ──────────────────────
+    for pic in doc.pictures:
+        try:
+            img = pic.get_image(doc)
+            if img:
+                idx = pic.self_ref.rsplit("/", 1)[-1]
+                fname = f"picture_{idx}.png"
+                img.convert("RGB").save(pics_dir / fname, format="PNG")
+                path_map[pic.self_ref] = f"pictures/{fname}"
+        except Exception as e:
+            _logger.warning("Failed to save picture %s: %s", pic.self_ref, e)
+
+    # ── Tables (re-render PDF pages via pypdfium2 and crop by bbox) ────────────
+    if not doc.tables:
+        return path_map
+
+    is_pdf = source_path and source_path.lower().endswith(".pdf")
+    if not is_pdf:
+        _logger.debug("Skipping table images — source is not a PDF")
+        return path_map
+
+    # Collect which pages we need
+    pages_needed = set()
+    for table in doc.tables:
+        if table.prov:
+            pages_needed.add(table.prov[0].page_no)
+
+    page_images = _render_pdf_pages(source_path, pages_needed, scale=2.0)
+    if not page_images:
+        _logger.warning("Could not render PDF pages for table images")
+        return path_map
+
+    for table in doc.tables:
+        try:
+            if not table.prov:
+                continue
+            prov    = table.prov[0]
+            page_no = prov.page_no
+            pil_page = page_images.get(page_no)
+            doc_page = doc.pages.get(page_no)
+            if pil_page is None or doc_page is None or doc_page.size is None:
+                continue
+            img = _crop_from_page(pil_page, prov.bbox, doc_page.size)
+            if img:
+                idx = table.self_ref.rsplit("/", 1)[-1]
+                fname = f"table_{idx}.png"
+                img.convert("RGB").save(tabs_dir / fname, format="PNG")
+                path_map[table.self_ref] = f"tables/{fname}"
+        except Exception as e:
+            _logger.warning("Failed to save table %s: %s", table.self_ref, e)
+
+    return path_map
+
+
+def _export_result(result, fmt: str, reorder: bool = False,
+                   image_path_map: dict = None) -> str:
+    return _export_result_from_doc(result.document, fmt, reorder=reorder,
+                                   image_path_map=image_path_map)
+
+
+def _export_result_from_doc(doc, fmt: str, reorder: bool = False,
+                            image_path_map: dict = None) -> str:
     if fmt == "md":
         return doc.export_to_markdown()
     elif fmt == "html":
@@ -530,6 +648,15 @@ def _export_result_from_doc(doc, fmt: str, reorder: bool = False) -> str:
         d = doc.model_dump(mode='json')
         if reorder:
             d = _reindex_json_reading_order(d)
+        if image_path_map:
+            for entry in d.get("pictures", []):
+                ref = entry.get("self_ref")
+                if ref in image_path_map:
+                    entry["image_path"] = image_path_map[ref]
+            for entry in d.get("tables", []):
+                ref = entry.get("self_ref")
+                if ref in image_path_map:
+                    entry["image_path"] = image_path_map[ref]
         return json.dumps(d, indent=2)
     elif fmt == "doctags":
         return doc.export_to_doctags()
@@ -569,7 +696,7 @@ def _build_converter(pipeline, ocr, pdf_backend, queue_max_size,
                      do_picture_description, pic_desc_model, vlm_model,
                      layout_batch_size, table_batch_size, ocr_batch_size,
                      table_mode, accelerator, send_info, send_timing,
-                     gemini_enrich: bool = False):
+                     gemini_enrich: bool = False, save_images: bool = False):
     """Build and return a DocumentConverter with the given options.
 
     Shared by _run_conversion and _run_multi_conversion to avoid duplicating
@@ -600,8 +727,7 @@ def _build_converter(pipeline, ocr, pdf_backend, queue_max_size,
         if do_picture_description:
             base["picture_description_options"] = _pic_desc_options()
             base["generate_picture_images"] = True
-        elif gemini_enrich:
-            # Need images rendered even without local VLM pic desc
+        elif gemini_enrich or save_images:
             base["generate_picture_images"] = True
         return base
 
@@ -677,7 +803,8 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                     queue_max_size: int = 100, batch_size: int = 0, reorder: bool = True,
                     layout_batch_size: int = 0, table_batch_size: int = 0, ocr_batch_size: int = 0,
                     table_mode: str = "accurate", accelerator: str = "auto",
-                    free_vram: bool = False, gemini_enrich: bool = False):
+                    free_vram: bool = False, gemini_enrich: bool = False,
+                    save_images: bool = False):
     import time, json as _json2
     _thread_local.job_id = job_id
     job = jobs[job_id]
@@ -717,7 +844,7 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             do_picture_description, pic_desc_model, vlm_model,
             layout_batch_size, table_batch_size, ocr_batch_size,
             table_mode, accelerator, send_info, send_timing,
-            gemini_enrich=gemini_enrich
+            gemini_enrich=gemini_enrich, save_images=save_images
         )
 
         # Determine if we should use batched conversion
@@ -762,37 +889,68 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             except Exception:
                 pass  # report is non-critical
 
-            if gemini_enrich:
-                t0 = time.perf_counter()
-                try:
-                    import json as _json_e
-                    from enricher import enrich as _gemini_enrich
-                    _fname = Path(source).name
-                    n_enriched, prompt_log = _gemini_enrich(result.document, filename=_fname)
-                    # Save prompt log for download
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    prompts_path = out_dir / "prompts.json"
-                    prompts_path.write_text(_json_e.dumps(prompt_log, indent=2), encoding="utf-8")
-                    job["prompts_path"] = prompts_path
-                    _dur = round(time.perf_counter() - t0, 2)
-                    send_timing({"stage": "gemini_enrich_done", "duration": _dur, "pictures": n_enriched})
-                    job["queue"].put(f"__GEMINI__:Enrichment complete — {n_enriched} picture(s) in {_dur}s. Prompt log saved.")
-                    job["queue"].put(f"__GEMINI__:__PROMPTS_READY__")
-                except Exception as _ee:
-                    _dur = round(time.perf_counter() - t0, 2)
-                    send_timing({"stage": "gemini_enrich_done", "duration": _dur, "error": str(_ee)})
-                    job["queue"].put(f"__GEMINI__:ERROR after {_dur}s: {_ee}")
-
             if reorder:
                 t0 = time.perf_counter()
                 _reorder_body_children(result.document)
                 send_timing({"stage": "reorder_done", "duration": round(time.perf_counter() - t0, 2)})
 
+            # Run Gemini enrichment + image saving in parallel
+            out_dir.mkdir(parents=True, exist_ok=True)
+            image_path_map = {}
+            if gemini_enrich:
+                import json as _json_e
+                from enricher import enrich as _gemini_enrich
+                from concurrent.futures import ThreadPoolExecutor
+                _fname = Path(source).name
+                t0 = time.perf_counter()
+                try:
+                    with ThreadPoolExecutor(max_workers=2) as _pool:
+                        _f_enrich = _pool.submit(_gemini_enrich, result.document, _fname)
+                        _f_images = _pool.submit(_save_item_images, result.document, out_dir, source)
+                        image_path_map = _f_images.result()
+                        n_enriched, prompt_log, token_stats = _f_enrich.result()
+
+                    n_pics = sum(1 for v in image_path_map.values() if "picture_" in v)
+                    n_tabs = sum(1 for v in image_path_map.values() if "table_" in v)
+                    _dur = round(time.perf_counter() - t0, 2)
+
+                    prompts_path = out_dir / "prompts.json"
+                    prompts_path.write_text(_json_e.dumps(prompt_log, indent=2), encoding="utf-8")
+                    job["prompts_path"] = prompts_path
+
+                    send_timing({
+                        "stage": "gemini_enrich_done",
+                        "duration": _dur,
+                        "pictures": n_enriched,
+                        "input_tokens": token_stats["input_tokens"],
+                        "output_tokens": token_stats["output_tokens"],
+                        "cost_usd": token_stats["cost_usd"],
+                        "images_saved_pictures": n_pics,
+                        "images_saved_tables": n_tabs,
+                    })
+                    job["queue"].put(
+                        f"__GEMINI__:Done — {n_enriched} pic(s) in {_dur}s | "
+                        f"in:{token_stats['input_tokens']} out:{token_stats['output_tokens']} "
+                        f"tokens | cost: ${token_stats['cost_usd']:.6f}"
+                    )
+                    job["queue"].put(f"__GEMINI__:__PROMPTS_READY__")
+                except Exception as _ee:
+                    _dur = round(time.perf_counter() - t0, 2)
+                    send_timing({"stage": "gemini_enrich_done", "duration": _dur, "error": str(_ee)})
+                    job["queue"].put(f"__GEMINI__:ERROR after {_dur}s: {_ee}")
+            elif save_images:
+                # Save images without Gemini
+                t0 = time.perf_counter()
+                image_path_map = _save_item_images(result.document, out_dir, source)
+                n_pics = sum(1 for v in image_path_map.values() if "picture_" in v)
+                n_tabs = sum(1 for v in image_path_map.values() if "table_" in v)
+                send_timing({"stage": "images_saved", "duration": round(time.perf_counter() - t0, 2),
+                             "pictures": n_pics, "tables": n_tabs})
+
             t0 = time.perf_counter()
-            text = _export_result(result, fmt, reorder=reorder)
+            text = _export_result(result, fmt, reorder=reorder, image_path_map=image_path_map)
             send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
             all_docs = [result.document] if do_chunk else []
-
         out_dir.mkdir(parents=True, exist_ok=True)
         ext = EXT_MAP[fmt]
         out_path = out_dir / f"result{ext}"
@@ -861,7 +1019,8 @@ def _run_multi_conversion(job_id, sources, filenames, pipeline, ocr, fmt,
                           do_chunk, chunk_max_tokens, pdf_backend, queue_max_size,
                           reorder, layout_batch_size, table_batch_size, ocr_batch_size,
                           table_mode, accelerator, doc_concurrency, doc_batch_size_setting,
-                          free_vram: bool = False, gemini_enrich: bool = False):
+                          free_vram: bool = False, gemini_enrich: bool = False,
+                          save_images: bool = False):
     """Convert multiple files in parallel using converter.convert_all()."""
     import time
     import json as _json2
@@ -907,7 +1066,7 @@ def _run_multi_conversion(job_id, sources, filenames, pipeline, ocr, fmt,
             do_picture_description, pic_desc_model, vlm_model,
             layout_batch_size, table_batch_size, ocr_batch_size,
             table_mode, accelerator, send_info, send_timing,
-            gemini_enrich=gemini_enrich
+            gemini_enrich=gemini_enrich, save_images=save_images
         )
 
         send_info({"multi": True, "file_count": len(sources),
@@ -1260,6 +1419,7 @@ async def convert(
     accelerator: str = Form(default="auto"),
     free_vram: bool = Form(default=False),
     gemini_enrich: bool = Form(default=False),
+    save_images: bool = Form(default=False),
     doc_concurrency: int = Form(default=4),
     doc_batch_size_setting: int = Form(default=4),
 ):
@@ -1313,7 +1473,7 @@ async def convert(
             vlm_model, do_chunk, chunk_max_tokens, pdf_backend, queue_max_size,
             reorder, layout_batch_size, table_batch_size, ocr_batch_size,
             table_mode, accelerator, doc_concurrency, doc_batch_size_setting,
-            free_vram, gemini_enrich
+            free_vram, gemini_enrich, save_images
         )
         return {"job_id": job_id}
 
@@ -1369,7 +1529,7 @@ async def convert(
             raise HTTPException(400, "URL fetch timed out after 30 seconds.")
         source = str(upload_path)
 
-    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder, layout_batch_size, table_batch_size, ocr_batch_size, table_mode, accelerator, free_vram, gemini_enrich)
+    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder, layout_batch_size, table_batch_size, ocr_batch_size, table_mode, accelerator, free_vram, gemini_enrich, save_images)
     return {"job_id": job_id}
 
 
