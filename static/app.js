@@ -440,7 +440,8 @@ function handleTiming(data) {
       addTimingRow('Gemini Enrich', 'ERROR: ' + data.error);
     } else {
       addTimingRow('Gemini Enrich', data.duration + 's');
-      addTimingRow('  Pictures enriched', data.pictures);
+      if (data.pictures_enriched != null) addTimingRow('  Pictures enriched', data.pictures_enriched);
+      if (data.tables_enriched != null)   addTimingRow('  Tables enriched', data.tables_enriched);
       if (data.images_saved_pictures) addTimingRow('  Pics saved', data.images_saved_pictures);
       if (data.images_saved_tables)   addTimingRow('  Tables saved', data.images_saved_tables);
       if (data.input_tokens != null) {

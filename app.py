@@ -3,6 +3,7 @@ import json as _json
 import logging
 import multiprocessing
 import queue
+import re
 import shutil
 import threading
 import uuid
@@ -629,6 +630,186 @@ def _merge_orphaned_list_descriptions(doc, y_tolerance: float = 3.0) -> None:
         doc.delete_items(node_items=[orphan])
 
 
+def _merge_split_tables(doc) -> int:
+    """Merge tables that span multiple pages into single logical tables.
+
+    Detects consecutive tables in body.children on different pages with
+    identical column headers. Merges by:
+      1. Appending continuation rows into the first table (re-indexing row offsets)
+      2. Merging provenance from all parts (tracks all source pages)
+      3. Storing original table refs/pages in merged_from metadata
+      4. Deleting continuation tables from the document
+
+    Returns the number of merges performed.
+    """
+    from docling_core.types.doc.document import TableData, TableCell
+
+    def _label_val(item):
+        label = getattr(item, "label", None)
+        if label is None:
+            return ""
+        return label.value if hasattr(label, "value") else str(label)
+
+    # Build ref → item lookup
+    ref_map = {}
+    for t in doc.tables:
+        ref_map[t.self_ref] = t
+
+    # Walk body.children in order, collect tables
+    ordered_tables = []
+    for child in doc.body.children:
+        item = ref_map.get(child.cref)
+        if item is not None and _label_val(item) == "table":
+            ordered_tables.append(item)
+
+    if len(ordered_tables) < 2:
+        return 0
+
+    def _get_headers(tbl):
+        if not hasattr(tbl, "data") or tbl.data is None:
+            return []
+        cells = tbl.data.table_cells or []
+        headers = sorted(
+            [c for c in cells if c.column_header],
+            key=lambda c: c.start_col_offset_idx
+        )
+        return [c.text.strip() for c in headers]
+
+    def _get_page(tbl):
+        return tbl.prov[0].page_no if tbl.prov else None
+
+    # Find chains of consecutive tables with matching headers
+    chains = []
+    current_chain = [ordered_tables[0]]
+
+    for i in range(1, len(ordered_tables)):
+        prev_tbl = current_chain[-1]
+        curr_tbl = ordered_tables[i]
+
+        prev_headers = _get_headers(prev_tbl)
+        curr_headers = _get_headers(curr_tbl)
+        prev_page = _get_page(prev_tbl)
+        curr_page = _get_page(curr_tbl)
+
+        if (prev_headers and curr_headers
+                and prev_headers == curr_headers
+                and prev_page is not None and curr_page is not None
+                and prev_page != curr_page):
+            current_chain.append(curr_tbl)
+        else:
+            if len(current_chain) > 1:
+                chains.append(current_chain)
+            current_chain = [curr_tbl]
+
+    if len(current_chain) > 1:
+        chains.append(current_chain)
+
+    if not chains:
+        return 0
+
+    merge_count = 0
+    to_delete = []
+
+    for chain in chains:
+        primary = chain[0]
+        primary_data = primary.data
+        if primary_data is None:
+            continue
+
+        # Track original parts metadata with row ranges
+        # row_start/row_end in the MERGED table's row space
+        merged_from = []
+        merged_from.append({
+            "original_ref": primary.self_ref,
+            "page_no": _get_page(primary),
+            "num_rows": primary_data.num_rows,
+            "row_start": 0,
+            "row_end": primary_data.num_rows,
+        })
+
+        current_row_count = primary_data.num_rows
+
+        for continuation in chain[1:]:
+            cont_data = continuation.data
+            if cont_data is None:
+                continue
+
+            # Get non-header rows from continuation
+            header_row_indices = set()
+            for cell in (cont_data.table_cells or []):
+                if cell.column_header:
+                    header_row_indices.add(cell.start_row_offset_idx)
+
+            header_rows = len(header_row_indices)
+            row_offset = current_row_count - header_rows
+            rows_added = cont_data.num_rows - header_rows
+
+            merged_from.append({
+                "original_ref": continuation.self_ref,
+                "page_no": _get_page(continuation),
+                "num_rows": cont_data.num_rows,
+                "row_start": current_row_count,
+                "row_end": current_row_count + rows_added,
+            })
+
+            new_cells = []
+            for cell in (cont_data.table_cells or []):
+                if cell.start_row_offset_idx in header_row_indices:
+                    continue  # skip header rows (already in primary)
+
+                new_cell = TableCell(
+                    text=cell.text,
+                    row_span=cell.row_span,
+                    col_span=cell.col_span,
+                    start_row_offset_idx=cell.start_row_offset_idx + row_offset,
+                    end_row_offset_idx=cell.end_row_offset_idx + row_offset,
+                    start_col_offset_idx=cell.start_col_offset_idx,
+                    end_col_offset_idx=cell.end_col_offset_idx,
+                    column_header=False,
+                    row_header=cell.row_header,
+                    row_section=cell.row_section,
+                    fillable=cell.fillable,
+                    bbox=cell.bbox,
+                )
+                new_cells.append(new_cell)
+
+            # Append new cells to primary
+            primary_data.table_cells.extend(new_cells)
+            current_row_count += rows_added
+
+            # Merge provenance (tracks all source pages)
+            primary.prov.extend(continuation.prov)
+
+            # Mark continuation for deletion
+            to_delete.append(continuation)
+
+        # Update primary table dimensions
+        primary_data.num_rows = current_row_count
+
+        # Store merge metadata on the primary table's meta
+        # (will be picked up during JSON export for audit DB)
+        if not hasattr(primary, '_merged_from'):
+            primary._merged_from = merged_from
+        else:
+            primary._merged_from = merged_from
+
+        merge_count += 1
+
+    # Delete continuation tables from the document
+    if to_delete:
+        delete_refs = {t.self_ref for t in to_delete}
+        try:
+            doc.delete_items(node_items=to_delete)
+        except Exception:
+            # Fallback: remove from body.children and doc.tables manually
+            doc.body.children = [
+                c for c in doc.body.children if c.cref not in delete_refs
+            ]
+            doc.tables = [t for t in doc.tables if t.self_ref not in delete_refs]
+
+    return merge_count
+
+
 def _reorder_body_children(doc) -> None:
     """Sort body.children in-place by (page ASC, t DESC, l ASC).
 
@@ -749,6 +930,147 @@ def _reindex_json_reading_order(data: dict) -> dict:
         return obj
 
     return rewrite(data)
+
+
+# ── Post-processing ──────────────────────────────────────────────────────────
+
+_SECTION_NUM_RE = re.compile(r'^(\d+(?:\.\d+)*)\s+(.+)$')
+
+# Patterns that identify a logical page number in footer text
+_LOGICAL_PAGE_PATTERNS = [
+    re.compile(r'^(\d+-\d+)$'),                                     # 1-14, 2-5, 10-2
+    re.compile(r'^([ivxlcdm]+)$', re.IGNORECASE),                   # i, ii, xiv (roman)
+    re.compile(r'^page\s*:?\s*#?\s*(\d[\d\-]*)$', re.IGNORECASE),  # Page: 5, Page 1-2
+    re.compile(r'^pg\.?\s*(\d[\d\-]*)$', re.IGNORECASE),            # Pg 5, Pg. 1-2
+    re.compile(r'^(\d+)$'),                                          # plain number: 5, 42
+]
+
+
+def _build_logical_page_map(data: dict) -> dict:
+    """Extract logical page numbers from page_footer elements.
+
+    1. Count how many pages each footer text appears on.
+    2. Discard repeated footers (appear on 3+ pages) — these are doc numbers,
+       watermarks, or copyright lines, not page numbers.
+    3. Match remaining unique footers against known page number patterns.
+    4. Return {physical_page_no: logical_page_num_string}.
+    """
+    from collections import Counter
+
+    footer_counts = Counter()  # text -> number of pages it appears on
+    footers_by_page = {}       # page_no -> list of footer texts
+
+    for item in data.get('texts', []):
+        if item.get('label') != 'page_footer':
+            continue
+        prov = item.get('prov', [])
+        if not prov:
+            continue
+        pg = prov[0].get('page_no')
+        txt = item.get('text', '').strip()
+        if not pg or not txt:
+            continue
+        footer_counts[txt] += 1
+        footers_by_page.setdefault(pg, []).append(txt)
+
+    # Unique footers = appear on 2 or fewer pages
+    unique_footers = {txt for txt, cnt in footer_counts.items() if cnt <= 2}
+
+    page_map = {}
+    for pg, texts in footers_by_page.items():
+        for txt in texts:
+            if txt not in unique_footers:
+                continue
+            for pat in _LOGICAL_PAGE_PATTERNS:
+                m = pat.match(txt)
+                if m:
+                    page_map[pg] = m.group(1)
+                    break
+            if pg in page_map:
+                break  # first match wins for this page
+
+    return page_map
+
+
+def _post_process_json(data: dict) -> dict:
+    """Post-process a DoclingDocument JSON dict to inject:
+      - hierarchy_path / hierarchy_title (from numbered section headers)
+      - logical_pg_num (from page footer analysis)
+    """
+    ARRAY_KEYS = ['texts', 'tables', 'pictures', 'groups',
+                  'key_value_items', 'form_items']
+
+    # Build ref → item lookup
+    ref_items = {}
+    for key in ARRAY_KEYS:
+        for item in data.get(key, []):
+            sr = item.get('self_ref', '')
+            if sr:
+                ref_items[sr] = item
+
+    # ── Logical page number map ──────────────────────────────────────────
+    logical_page_map = _build_logical_page_map(data)
+
+    # ── Hierarchy stack ──────────────────────────────────────────────────
+    # stack entries: (numbering_parts, title)  e.g. ([7,4,2], "Board Assembly")
+    stack = []
+
+    def _current_path():
+        if not stack:
+            return ""
+        return "/".join(str(p) for level_parts, _ in stack for p in level_parts[-1:])
+
+    def _current_title():
+        if not stack:
+            return ""
+        return ">".join(title for _, title in stack)
+
+    def _update_stack(num_parts: list[int], title: str):
+        """Push a new header onto the stack, popping deeper or same-level entries."""
+        depth = len(num_parts)
+        while len(stack) >= depth:
+            stack.pop()
+        stack.append((num_parts, title))
+
+    def _inject(item: dict):
+        item["hierarchy_path"] = _current_path()
+        item["hierarchy_title"] = _current_title()
+        # Logical page number from footer analysis
+        prov = item.get('prov', [])
+        if prov:
+            pg = prov[0].get('page_no')
+            if pg and pg in logical_page_map:
+                item["logical_pg_num"] = logical_page_map[pg]
+
+    def _process_ref(cref: str):
+        item = ref_items.get(cref)
+        if item is None:
+            return
+        label = item.get('label', '')
+        if label == 'section_header':
+            text = item.get('text', '')
+            m = _SECTION_NUM_RE.match(text.strip())
+            if m:
+                num_str, title = m.group(1), m.group(2).strip()
+                num_parts = [int(x) for x in num_str.split('.')]
+                _update_stack(num_parts, title)
+        _inject(item)
+        # Process group children recursively
+        for child in item.get('children', []):
+            child_ref = child.get('cref', '')
+            child_item = ref_items.get(child_ref)
+            if child_item:
+                _inject(child_item)
+
+    # Walk body children in reading order
+    for child in data.get('body', {}).get('children', []):
+        _process_ref(child.get('cref', ''))
+
+    # Store the page map at document level for Page_Registry population
+    if logical_page_map:
+        data["_logical_page_map"] = {str(k): v for k, v in logical_page_map.items()}
+
+    return data
 
 
 def _render_pdf_pages(source_path: str, page_nos: set, scale: float = 2.0) -> dict:
@@ -884,6 +1206,7 @@ def _export_result_from_doc(doc, fmt: str, reorder: bool = False,
         d = doc.model_dump(mode='json')
         if reorder:
             d = _reindex_json_reading_order(d)
+        d = _post_process_json(d)
         if image_path_map:
             for entry in d.get("pictures", []):
                 ref = entry.get("self_ref")
@@ -1042,11 +1365,21 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                     free_vram: bool = False, gemini_enrich: bool = False,
                     save_images: bool = False):
     import time, json as _json2
+    import audit as _audit
     _thread_local.job_id = job_id
     job = jobs[job_id]
     job["status"] = "running"
     out_dir = OUTPUTS / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
     t_total_start = time.perf_counter()
+
+    # ── Audit DB init ──────────────────────────────────────────────────
+    _audit_db = _audit.init_db(str(out_dir / "audit.db"))
+    _audit.insert_document(
+        _audit_db, job_id, Path(source).name,
+        pipeline=pipeline, ocr_enabled=ocr,
+        accelerator=accelerator, reorder_applied=reorder,
+    )
 
     handler = _QueueHandler(job["queue"])
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
@@ -1064,6 +1397,10 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
 
     def send_timing(data: dict):
         job["queue"].put(f"__TIMING__:{_json2.dumps(data)}")
+        try:
+            _audit.record_timing(_audit_db, job_id, data)
+        except Exception:
+            pass
 
     def send_info(data: dict):
         job["queue"].put(f"__INFO__:{_json2.dumps(data)}")
@@ -1128,6 +1465,16 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             except Exception:
                 pass  # report is non-critical
 
+            # Merge split tables before reorder
+            try:
+                t0 = time.perf_counter()
+                n_merged = _merge_split_tables(result.document)
+                if n_merged > 0:
+                    send_timing({"stage": "table_merge", "duration": round(time.perf_counter() - t0, 2),
+                                 "tables_merged": n_merged})
+            except Exception:
+                pass
+
             if reorder:
                 t0 = time.perf_counter()
                 _reorder_body_children(result.document)
@@ -1149,8 +1496,10 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                         image_path_map = _f_images.result()
                         n_enriched, prompt_log, token_stats = _f_enrich.result()
 
-                    n_pics = sum(1 for v in image_path_map.values() if "picture_" in v)
-                    n_tabs = sum(1 for v in image_path_map.values() if "table_" in v)
+                    n_pics_saved = sum(1 for v in image_path_map.values() if "picture_" in v)
+                    n_tabs_saved = sum(1 for v in image_path_map.values() if "table_" in v)
+                    n_pics_enriched = sum(1 for e in prompt_log if e.get("picture_ref"))
+                    n_tabs_enriched = sum(1 for e in prompt_log if e.get("type") == "table")
                     _dur = round(time.perf_counter() - t0, 2)
 
                     prompts_path = out_dir / "prompts.json"
@@ -1160,15 +1509,16 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
                     send_timing({
                         "stage": "gemini_enrich_done",
                         "duration": _dur,
-                        "pictures": n_enriched,
+                        "pictures_enriched": n_pics_enriched,
+                        "tables_enriched": n_tabs_enriched,
                         "input_tokens": token_stats["input_tokens"],
                         "output_tokens": token_stats["output_tokens"],
                         "cost_usd": token_stats["cost_usd"],
-                        "images_saved_pictures": n_pics,
-                        "images_saved_tables": n_tabs,
+                        "images_saved_pictures": n_pics_saved,
+                        "images_saved_tables": n_tabs_saved,
                     })
                     job["queue"].put(
-                        f"__GEMINI__:Done — {n_enriched} pic(s) in {_dur}s | "
+                        f"__GEMINI__:Done — {n_pics_enriched} pic(s) + {n_tabs_enriched} table(s) in {_dur}s | "
                         f"in:{token_stats['input_tokens']} out:{token_stats['output_tokens']} "
                         f"tokens | cost: ${token_stats['cost_usd']:.6f}"
                     )
@@ -1197,6 +1547,16 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
         out_path.write_text(text, encoding="utf-8")
         send_timing({"stage": "file_write_done", "duration": round(time.perf_counter() - t0, 2),
                      "size_kb": round(len(text.encode("utf-8")) / 1024, 1)})
+
+        # ── Audit: populate tables from JSON ───────────────────────────
+        if fmt == "json":
+            try:
+                t0 = time.perf_counter()
+                _audit.populate_from_json(_audit_db, job_id, str(out_path))
+                send_timing({"stage": "audit_populate",
+                             "duration": round(time.perf_counter() - t0, 2)})
+            except Exception as _ae:
+                log.warning("Audit population failed: %s", _ae)
 
         if do_chunk:
             t0 = time.perf_counter()
@@ -1228,12 +1588,23 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             send_timing({"stage": "chunking_done", "duration": round(time.perf_counter() - t0, 2),
                          "chunk_count": len(chunks_display)})
 
-        send_timing({"stage": "total", "duration": round(time.perf_counter() - t_total_start, 2)})
+        _total_dur = round(time.perf_counter() - t_total_start, 2)
+        send_timing({"stage": "total", "duration": _total_dur})
         job["result_path"] = out_path
         job["status"] = "done"
+        try:
+            _audit.finalize_document(_audit_db, job_id, "COMPLETED", _total_dur)
+        except Exception:
+            pass
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
+        try:
+            _audit.record_error(_audit_db, job_id, "pipeline", e, is_recoverable=False)
+            _audit.finalize_document(_audit_db, job_id, "FAILED",
+                                     round(time.perf_counter() - t_total_start, 2))
+        except Exception:
+            pass
     finally:
         _full_cleanup(converter=converter, result=result)
         try:
@@ -1246,6 +1617,7 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
             pass
         docling_logger.removeHandler(handler)
         enricher_logger.removeHandler(gemini_handler)
+        _audit.close_db(_audit_db)
         job["queue"].put(None)  # sentinel
 
 
@@ -1606,6 +1978,7 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
     import time
     import json as _json2
     from pathlib import Path as _Path
+    import audit as _audit
 
     _thread_local.job_id = job_id
     job = jobs[job_id]
@@ -1613,6 +1986,14 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
     out_dir = OUTPUTS / job_id
     out_dir.mkdir(parents=True, exist_ok=True)
     t_total_start = time.perf_counter()
+
+    # ── Audit DB init ──────────────────────────────────────────────────
+    _audit_db = _audit.init_db(str(out_dir / "audit.db"))
+    _audit.insert_document(
+        _audit_db, job_id, _Path(source).name,
+        pipeline=pipeline, ocr_enabled=ocr,
+        accelerator=accelerator, reorder_applied=reorder,
+    )
 
     handler = _QueueHandler(job["queue"])
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
@@ -1630,6 +2011,10 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
 
     def send_timing(data: dict):
         job["queue"].put(f"__TIMING__:{_json2.dumps(data)}")
+        try:
+            _audit.record_timing(_audit_db, job_id, data)
+        except Exception:
+            pass
 
     def send_info(data: dict):
         job["queue"].put(f"__INFO__:{_json2.dumps(data)}")
@@ -1675,6 +2060,12 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
         # Store bundle metadata on job
         bundle_meta = [b.to_dict() for b in bundles]
         job["bundles"] = bundle_meta
+
+        # ── Audit: insert all bundles as PENDING ───────────────────────
+        try:
+            _audit.insert_bundles(_audit_db, job_id, bundles)
+        except Exception:
+            pass
 
         # Send initial status for all bundles
         for i, b in enumerate(bundles):
@@ -1795,6 +2186,13 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     send_bundle_status({"index": idx, "bundle_id": bundle.id,
                                         "name": bundle.name, "status": "done",
                                         "page_count": meta["page_count"]})
+                    try:
+                        _audit.update_bundle_status(
+                            _audit_db, job_id, idx, "DONE",
+                            duration=meta["duration"], page_count=meta["page_count"],
+                            json_path=str(bundle_json_path))
+                    except Exception:
+                        pass
                 else:
                     err = meta.get("error", "unknown error")
                     send_timing({"stage": "bundle_error", "bundle_index": idx,
@@ -1803,6 +2201,12 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     send_bundle_status({"index": idx, "bundle_id": bundle.id,
                                         "name": bundle.name, "status": "error",
                                         "error": err})
+                    try:
+                        _audit.update_bundle_status(
+                            _audit_db, job_id, idx, "ERROR",
+                            duration=meta.get("duration", 0), error=err)
+                    except Exception:
+                        pass
 
             # Cleanup the shared converter (models off GPU → CPU → deleted)
             _full_cleanup(converter=converter)
@@ -1832,6 +2236,10 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
             for i, bundle in enumerate(bundles):
                 send_bundle_status({"index": i, "bundle_id": bundle.id,
                                     "name": bundle.name, "status": "converting"})
+                try:
+                    _audit.update_bundle_status(_audit_db, job_id, i, "CONVERTING")
+                except Exception:
+                    pass
                 job["queue"].put(
                     f"__INFO_BATCH__:Bundle {i+1}/{len(bundles)}: {bundle.name} "
                     f"(pages {bundle.page_start}-{bundle.page_end})"
@@ -1859,6 +2267,13 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     send_bundle_status({"index": i, "bundle_id": bundle.id,
                                         "name": bundle.name, "status": "done",
                                         "page_count": bundle_pages})
+                    try:
+                        _audit.update_bundle_status(
+                            _audit_db, job_id, i, "DONE",
+                            duration=conv_time, page_count=bundle_pages,
+                            json_path=str(bundle_json_path))
+                    except Exception:
+                        pass
 
                     # Per-bundle cleanup: unload C++ backend, gc
                     try:
@@ -1876,6 +2291,12 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     send_bundle_status({"index": i, "bundle_id": bundle.id,
                                         "name": bundle.name, "status": "error",
                                         "error": str(be)})
+                    try:
+                        _audit.update_bundle_status(
+                            _audit_db, job_id, i, "ERROR",
+                            duration=conv_time, error=str(be))
+                    except Exception:
+                        pass
 
             # Cleanup shared converter after all bundles
             _full_cleanup(converter=converter)
@@ -1912,6 +2333,11 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     ),
                 )
                 proc.start()
+                try:
+                    _audit.update_bundle_status(
+                        _audit_db, job_id, i, "CONVERTING", child_pid=proc.pid)
+                except Exception:
+                    pass
                 proc.join()
 
                 meta = {"status": "error", "page_count": 0, "duration": 0, "error": "subprocess failed"}
@@ -1935,6 +2361,14 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     send_bundle_status({"index": i, "bundle_id": bundle.id,
                                         "name": bundle.name, "status": "done",
                                         "page_count": meta["page_count"]})
+                    try:
+                        _audit.update_bundle_status(
+                            _audit_db, job_id, i, "DONE",
+                            duration=meta["duration"], page_count=meta["page_count"],
+                            model_load_time=meta.get("model_load_time"),
+                            json_path=str(bundle_json_path), child_pid=proc.pid)
+                    except Exception:
+                        pass
                 else:
                     err = meta.get("error", "unknown error")
                     send_timing({"stage": "bundle_error", "bundle_index": i,
@@ -1944,6 +2378,13 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                                         "name": bundle.name, "status": "error",
                                         "error": err})
                     log.warning("Bundle %s failed: %s", bundle.id, err)
+                    try:
+                        _audit.update_bundle_status(
+                            _audit_db, job_id, i, "ERROR",
+                            duration=meta.get("duration", 0), error=err,
+                            child_pid=proc.pid)
+                    except Exception:
+                        pass
 
         job["page_count"] = total_page_count
 
@@ -1971,7 +2412,18 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                      "duration": round(time.perf_counter() - t0, 2),
                      "bundles_merged": len(bundle_doc_paths)})
 
-        # ── Step 3b: Reorder merged doc (includes orphan list merge) ──
+        # ── Step 3b: Merge split tables (before reorder) ────────────────
+        try:
+            t0 = time.perf_counter()
+            n_merged = _merge_split_tables(merged_doc)
+            if n_merged > 0:
+                send_timing({"stage": "table_merge", "duration": round(time.perf_counter() - t0, 2),
+                             "tables_merged": n_merged})
+                job["queue"].put(f"__INFO_BATCH__:Merged {n_merged} split table(s)")
+        except Exception as _tme:
+            log.warning("Table merge failed: %s", _tme)
+
+        # ── Step 3c: Reorder merged doc (includes orphan list merge) ──
         if reorder:
             t0 = time.perf_counter()
             _reorder_body_children(merged_doc)
@@ -2010,8 +2462,10 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                     image_path_map = _f_images.result()
                     n_enriched, prompt_log, token_stats = _f_enrich.result()
 
-                n_pics = sum(1 for v in image_path_map.values() if "picture_" in v)
-                n_tabs = sum(1 for v in image_path_map.values() if "table_" in v)
+                n_pics_saved = sum(1 for v in image_path_map.values() if "picture_" in v)
+                n_tabs_saved = sum(1 for v in image_path_map.values() if "table_" in v)
+                n_pics_enriched = sum(1 for e in prompt_log if e.get("picture_ref"))
+                n_tabs_enriched = sum(1 for e in prompt_log if e.get("type") == "table")
                 _dur = round(time.perf_counter() - t0, 2)
 
                 prompts_path = out_dir / "prompts.json"
@@ -2020,15 +2474,16 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
 
                 send_timing({
                     "stage": "gemini_enrich_done", "duration": _dur,
-                    "pictures": n_enriched,
+                    "pictures_enriched": n_pics_enriched,
+                    "tables_enriched": n_tabs_enriched,
                     "input_tokens": token_stats["input_tokens"],
                     "output_tokens": token_stats["output_tokens"],
                     "cost_usd": token_stats["cost_usd"],
-                    "images_saved_pictures": n_pics,
-                    "images_saved_tables": n_tabs,
+                    "images_saved_pictures": n_pics_saved,
+                    "images_saved_tables": n_tabs_saved,
                 })
                 job["queue"].put(
-                    f"__GEMINI__:Done — {n_enriched} pic(s) in {_dur}s | "
+                    f"__GEMINI__:Done — {n_pics_enriched} pic(s) + {n_tabs_enriched} table(s) in {_dur}s | "
                     f"in:{token_stats['input_tokens']} out:{token_stats['output_tokens']} "
                     f"tokens | cost: ${token_stats['cost_usd']:.6f}"
                 )
@@ -2051,6 +2506,7 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
             d = merged_doc.model_dump(mode='json')
             if reorder:
                 d = _reindex_json_reading_order(d)
+            d = _post_process_json(d)
 
             # Inject image paths
             if image_path_map:
@@ -2079,6 +2535,28 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
                                 "continuation_of": b.continuation_of,
                             }
 
+            # Inject merged_from metadata into merged tables and stamp
+            # origin_page / origin_ref onto each cell for full traceability
+            merged_from_map = {}
+            for tbl in merged_doc.tables:
+                if hasattr(tbl, '_merged_from') and tbl._merged_from:
+                    merged_from_map[tbl.self_ref] = tbl._merged_from
+            if merged_from_map:
+                for entry in d.get("tables", []):
+                    ref = entry.get("self_ref")
+                    mf = merged_from_map.get(ref)
+                    if not mf:
+                        continue
+                    entry["merged_from"] = mf
+                    # Stamp each cell with its origin
+                    for cell in entry.get("data", {}).get("table_cells", []):
+                        row = cell.get("start_row_offset_idx", 0)
+                        for part in mf:
+                            if part["row_start"] <= row < part["row_end"]:
+                                cell["origin_page"] = part["page_no"]
+                                cell["origin_ref"] = part["original_ref"]
+                                break
+
             # Add bundle plan to top-level JSON
             d["bundle_plan"] = [b.to_dict() for b in bundles]
 
@@ -2096,6 +2574,16 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
         send_timing({"stage": "file_write_done",
                      "duration": round(time.perf_counter() - t0, 2),
                      "size_kb": round(len(text.encode("utf-8")) / 1024, 1)})
+
+        # ── Step 8.5: Populate audit tables from JSON ──────────────────
+        if fmt == "json":
+            try:
+                t0 = time.perf_counter()
+                _audit.populate_from_json(_audit_db, job_id, str(out_path))
+                send_timing({"stage": "audit_populate",
+                             "duration": round(time.perf_counter() - t0, 2)})
+            except Exception as _ae:
+                log.warning("Audit population failed: %s", _ae)
 
         # ── Step 9: Chunking ─────────────────────────────────────────
         if do_chunk:
@@ -2132,19 +2620,33 @@ def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, 
             except Exception:
                 pass
 
-        send_timing({"stage": "total", "duration": round(time.perf_counter() - t_total_start, 2)})
+        _total_dur = round(time.perf_counter() - t_total_start, 2)
+        send_timing({"stage": "total", "duration": _total_dur})
         job["result_path"] = out_path
         job["status"] = "done"
+        try:
+            _audit.finalize_document(_audit_db, job_id, "COMPLETED", _total_dur)
+        except Exception:
+            pass
 
     except Exception as e:
+        import traceback
+        log.error("Bundled conversion failed: %s\n%s", e, traceback.format_exc())
         job["status"] = "error"
         job["error"] = str(e)
+        try:
+            _audit.record_error(_audit_db, job_id, "pipeline", e, is_recoverable=False)
+            _audit.finalize_document(_audit_db, job_id, "FAILED",
+                                     round(time.perf_counter() - t_total_start, 2))
+        except Exception:
+            pass
     finally:
         # No converter to clean up — it ran in subprocesses.
         # Clean up any remaining objects in main process.
         _full_cleanup()
         docling_logger.removeHandler(handler)
         enricher_logger.removeHandler(gemini_handler)
+        _audit.close_db(_audit_db)
         job["queue"].put(None)  # sentinel
 
 

@@ -64,7 +64,8 @@ _HEADING_LABELS = {"section_header", "title"}
 _TEXT_LABELS    = {"paragraph", "text", "list_item", "caption",
                    "section_header", "title", "footnote"}
 _TABLE_LABEL    = "table"
-_SECTION_KEYS   = {"PURPOSE", "COMPONENTS", "VALUES", "DESCRIPTION"}
+_SECTION_KEYS   = {"PURPOSE", "COMPONENTS", "VALUES", "DESCRIPTION",
+                    "KEY_ITEMS", "SUMMARY", "MARKDOWN"}
 
 
 # ── Gemini call with retry ─────────────────────────────────────────────────────
@@ -112,9 +113,10 @@ def _flat_order(doc, ref_map) -> list:
         item = ref_map.get(cref)
         if item is None:
             return
-        # Pictures are always leaf nodes — never recurse into their children
-        # (children of a picture are captions/footnotes, not sub-elements)
-        if cref.startswith("#/pictures/"):
+        # Pictures and tables are leaf nodes for enrichment purposes —
+        # their children are captions/footnotes, not sub-elements.
+        # Add them directly without recursing into children.
+        if cref.startswith("#/pictures/") or cref.startswith("#/tables/"):
             result.append((cref, item))
             return
         if hasattr(item, "children") and item.children:
@@ -248,6 +250,43 @@ def _build_prompt(classification: str, section: str, context: str,
     )
 
 
+# ── Table prompt builder ──────────────────────────────────────────────────────
+
+def _build_table_prompt(section: str, context: str, markdown: str,
+                        page_no, filename: str) -> str:
+    """Build a structured RAG-optimised prompt for table summarisation.
+    Follows the same pattern as mani_enricher.py _table_prompt."""
+    context_block = (
+        f"--- BEGIN DOCUMENT CONTEXT ---\n{context.strip()}\n--- END DOCUMENT CONTEXT ---"
+        if context.strip()
+        else "(No surrounding text available for this table.)"
+    )
+    return (
+        f"You are indexing a table from a document for a RAG system.\n"
+        f"Users will search this index with questions about the table contents.\n\n"
+        f"Table location: page {page_no} of '{filename}'\n"
+        f"Parent section: {section}\n\n"
+        f"The following text appears in the same section of the document as this table.\n"
+        f"Use it to understand the purpose and context of the table:\n\n"
+        f"{context_block}\n\n"
+        f"TABLE MARKDOWN:\n{markdown}\n\n"
+        "Respond in this exact structure (no extra text before or after):\n\n"
+        "PURPOSE: One sentence — what this table is for.\n"
+        "KEY_ITEMS: Comma-separated list of important items, part numbers, "
+        "codes, or values in the table.\n"
+        "SUMMARY: 1-2 sentences a reader could match against a search query."
+    )
+
+
+def _table_to_markdown(table_item, doc) -> Optional[str]:
+    """Convert a Docling table item to markdown string."""
+    try:
+        md = table_item.export_to_markdown(doc)
+        return md.strip() if md and md.strip() else None
+    except Exception:
+        return None
+
+
 # ── Response parser ────────────────────────────────────────────────────────────
 
 def _parse_response(text: str) -> str:
@@ -276,10 +315,36 @@ def _parse_response(text: str) -> str:
         return text.strip()
 
     parts = []
-    for key in ("PURPOSE", "COMPONENTS", "VALUES", "DESCRIPTION"):
+    for key in ("PURPOSE", "COMPONENTS", "VALUES", "DESCRIPTION",
+                "KEY_ITEMS", "SUMMARY"):
         if key in result:
             parts.append(f"{key}: {result[key]}")
     return "\n".join(parts)
+
+
+def _parse_table_response(text: str) -> dict:
+    """Parse a table enrichment response into structured fields."""
+    result = {}
+    current = None
+    buf = []
+    for line in text.splitlines():
+        matched = None
+        for key in ("PURPOSE", "KEY_ITEMS", "SUMMARY"):
+            if line.startswith(f"{key}:"):
+                matched = key
+                break
+        if matched:
+            if current is not None:
+                result[current] = "\n".join(buf).strip()
+            current = matched
+            buf = [line[len(matched) + 1:].strip()]
+        else:
+            buf.append(line)
+    if current is not None:
+        result[current] = "\n".join(buf).strip()
+    if not result:
+        result["SUMMARY"] = text.strip()
+    return result
 
 
 # ── Per-picture async worker ───────────────────────────────────────────────────
@@ -352,6 +417,68 @@ async def _enrich_picture(client, doc, pic_item, flat: list,
             log.warning("Gemini enrich failed for picture %s: %s", pic_item.self_ref, exc)
 
 
+# ── Per-table async worker ────────────────────────────────────────────────────
+
+async def _enrich_table(client, doc, table_item, flat: list,
+                        tbl_pos: int, sem: asyncio.Semaphore,
+                        model: str, filename: str,
+                        prompt_log: list):
+    """Summarise a single table using Gemini text (RAG-optimised).
+
+    Converts the table to markdown, collects section context, sends to Gemini,
+    and writes back table_summary to the table item's meta field.
+    """
+    markdown = _table_to_markdown(table_item, doc)
+    if not markdown:
+        log.warning("Could not export table %s to markdown — skipping", table_item.self_ref)
+        return
+
+    page_no = table_item.prov[0].page_no if table_item.prov else "?"
+    section = _nearest_heading(flat, tbl_pos)
+    context = _surrounding_text(flat, tbl_pos, doc)
+    prompt = _build_table_prompt(section, context, markdown, page_no, filename)
+
+    entry = {
+        "type": "table",
+        "table_ref": table_item.self_ref,
+        "page": page_no,
+        "section": section,
+        "prompt": prompt,
+        "response": None,
+        "error": None,
+    }
+    prompt_log.append(entry)
+
+    async with sem:
+        try:
+            resp = await _call_gemini(client, model, prompt)
+            response_text = resp.text
+            usage = resp.usage_metadata
+            entry["input_tokens"] = getattr(usage, "prompt_token_count", 0) or 0
+            entry["output_tokens"] = getattr(usage, "candidates_token_count", 0) or 0
+            parsed = _parse_table_response(response_text)
+            entry["response"] = response_text
+
+            # Build summary string and write back to table item meta
+            summary_parts = []
+            for key in ("PURPOSE", "KEY_ITEMS", "SUMMARY"):
+                if key in parsed:
+                    summary_parts.append(f"{key}: {parsed[key]}")
+            summary_text = "\n".join(summary_parts)
+
+            from docling_core.types.doc.document import DescriptionMetaField, FloatingMeta
+            if table_item.meta is None:
+                table_item.meta = FloatingMeta()
+            table_item.meta.description = DescriptionMetaField(
+                text=summary_text,
+                created_by=model,
+            )
+            log.info("Enriched table %s (page %s)", table_item.self_ref, page_no)
+        except Exception as exc:
+            entry["error"] = str(exc)
+            log.warning("Gemini table enrich failed for %s: %s", table_item.self_ref, exc)
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 async def _enrich_async(doc, filename: str,
@@ -368,26 +495,43 @@ async def _enrich_async(doc, filename: str,
     ref_map = _build_ref_map(doc)
     flat    = _flat_order(doc, ref_map)
 
-    # Build picture position lookup
+    # Build picture and table position lookups
     pic_positions = {}
+    tbl_positions = {}
     for i, (ref, item) in enumerate(flat):
         if ref.startswith("#/pictures/"):
             pic_positions[ref] = i
+        elif ref.startswith("#/tables/"):
+            tbl_positions[ref] = i
 
     pictures = [p for p in doc.pictures if p.self_ref in pic_positions]
-    if not pictures:
-        log.info("No pictures with images found — skipping Gemini enrichment")
+    tables = [t for t in doc.tables if t.self_ref in tbl_positions
+              and _label_value(t) == _TABLE_LABEL]
+
+    if not pictures and not tables:
+        log.info("No pictures or tables found — skipping Gemini enrichment")
         return 0, [], {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 
-    log.info("Gemini enrichment: %d pictures → %s (concurrency=%d)", len(pictures), model, concurrency)
+    log.info("Gemini enrichment: %d pictures + %d tables → %s (concurrency=%d)",
+             len(pictures), len(tables), model, concurrency)
 
     prompt_log: list = []
-    tasks = [
+
+    # Picture tasks
+    pic_tasks = [
         _enrich_picture(client, doc, pic, flat, pic_positions[pic.self_ref],
                         sem, model, filename, prompt_log)
         for pic in pictures
     ]
-    await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Table tasks
+    tbl_tasks = [
+        _enrich_table(client, doc, tbl, flat, tbl_positions[tbl.self_ref],
+                      sem, model, filename, prompt_log)
+        for tbl in tables
+    ]
+
+    await asyncio.gather(*pic_tasks, *tbl_tasks, return_exceptions=True)
 
     # Sum token usage and compute cost
     input_tokens  = sum(e.get("input_tokens",  0) for e in prompt_log)
@@ -404,7 +548,8 @@ async def _enrich_async(doc, filename: str,
     log.info("Token usage — input: %d  output: %d  cost: $%.6f",
              input_tokens, output_tokens, cost_usd)
 
-    return len(pictures), prompt_log, token_stats
+    n_enriched = len(pictures) + len(tables)
+    return n_enriched, prompt_log, token_stats
 
 
 def enrich(doc, filename: str = "document.pdf",
