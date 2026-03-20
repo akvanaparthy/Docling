@@ -79,6 +79,20 @@ function updateChunkSection() {
   document.getElementById('chunk-tokens-group').style.display = checked ? '' : 'none';
 }
 
+function updateBundleSection() {
+  const checked = document.getElementById('bundle').checked;
+  document.getElementById('bundle-max-pages-group').style.display = checked ? '' : 'none';
+  document.getElementById('model-reload-group').style.display = checked ? '' : 'none';
+  document.getElementById('parallel-bundles-group').style.display = checked ? '' : 'none';
+  // When bundle is checked, hide batch size (bundle replaces batching)
+  if (checked) {
+    document.getElementById('batch-size-group').style.display = 'none';
+  } else {
+    const isMulti = selectedFiles.length > 1;
+    document.getElementById('batch-size-group').style.display = isMulti ? 'none' : '';
+  }
+}
+
 function updateMultiFileOptions() {
   const isMulti = selectedFiles.length > 1;
   // Hide page range and batch size for multi-file
@@ -441,6 +455,27 @@ function handleTiming(data) {
     if (data.pictures) addTimingRow('  Pictures', data.pictures);
     if (data.tables)   addTimingRow('  Tables',   data.tables);
 
+  } else if (s === 'bundle_plan') {
+    addTimingRow('Bundle plan', data.duration + 's');
+    addTimingRow('  Bundles', data.bundles);
+    if (data.total_pages) addTimingRow('  Total pages', data.total_pages);
+    if (data.fallback) addTimingRow('  Fallback', 'No TOC — standard mode');
+
+  } else if (s === 'bundle_done') {
+    addTimingRow(`Bundle ${data.bundle_index + 1}`, data.duration + 's');
+    addTimingRow(`  ${data.name}`, `${data.page_count} pages`);
+
+  } else if (s === 'bundle_error') {
+    addTimingRow(`Bundle ${data.bundle_index + 1}`, 'ERROR');
+    addTimingRow(`  ${data.bundle_id}`, data.error || 'failed');
+
+  } else if (s === 'bundle_meta_inject') {
+    // silent — very fast
+
+  } else if (s === 'models_loading') {
+    addTimingRow('Models loading', data.duration + 's');
+    addTimingRow('  Across bundles', data.bundles);
+
   } else if (s === 'reorder_done') {
     addTimingRow(filePrefix + 'Reorder', data.duration + 's');
 
@@ -463,6 +498,36 @@ function handleTiming(data) {
     stopElapsedTimer();
     document.getElementById('t-elapsed').textContent =
       ((Date.now() - jobStartTime) / 1000).toFixed(1) + 's';
+  }
+}
+
+// Bundle status table
+function handleBundleStatus(data) {
+  const section = document.getElementById('bundle-status-section');
+  const body = document.getElementById('bundle-status-body');
+
+  // Create row if it doesn't exist yet
+  let row = document.getElementById(`bundle-row-${data.index}`);
+  if (!row) {
+    section.style.display = '';
+    row = document.createElement('tr');
+    row.id = `bundle-row-${data.index}`;
+    row.innerHTML = `
+      <td>${data.index + 1}</td>
+      <td class="file-row-name">${data.name || data.bundle_id}</td>
+      <td>${data.pages || '-'}</td>
+      <td><span class="badge badge-pending" id="bundle-badge-${data.index}">pending</span></td>
+    `;
+    body.appendChild(row);
+    // Update count
+    const count = document.getElementById('bundle-status-count');
+    if (count) count.textContent = `(${body.children.length})`;
+  }
+
+  const badge = document.getElementById(`bundle-badge-${data.index}`);
+  if (badge) {
+    badge.textContent = data.status;
+    badge.className = 'badge badge-' + data.status;
   }
 }
 
@@ -747,6 +812,8 @@ async function startConvert() {
   document.getElementById('file-status-section').style.display = 'none';
   document.getElementById('file-status-body').innerHTML = '';
   document.getElementById('download-all-btn').style.display = 'none';
+  document.getElementById('bundle-status-section').style.display = 'none';
+  document.getElementById('bundle-status-body').innerHTML = '';
   _chunksData = [];
   _lastPageCount = 0;
   document.getElementById('content-row').style.display = 'flex';
@@ -780,6 +847,10 @@ async function startConvert() {
   fd.append('gemini_enrich', document.getElementById('gemini-enrich').checked);
   fd.append('doc_concurrency', document.getElementById('doc-concurrency').value);
   fd.append('doc_batch_size_setting', document.getElementById('doc-concurrency').value);
+  fd.append('bundle', document.getElementById('bundle').checked);
+  fd.append('bundle_max_pages', document.getElementById('bundle-max-pages').value);
+  fd.append('model_reload', document.getElementById('model-reload').checked);
+  fd.append('parallel_bundles', document.getElementById('parallel-bundles').checked);
 
   if (currentTab === 'file') {
     if (selectedFiles.length === 0) { appendLog('ERROR: No file selected.', 'err'); btn.disabled = false; return; }
@@ -857,6 +928,10 @@ async function startConvert() {
     } else {
       appendGeminiLog(msg);
     }
+  });
+
+  es.addEventListener('bundle_status', e => {
+    try { handleBundleStatus(JSON.parse(e.data)); } catch (_) {}
   });
 
   es.addEventListener('done', async () => {

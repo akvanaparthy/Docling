@@ -1,6 +1,7 @@
 import asyncio
 import json as _json
 import logging
+import multiprocessing
 import queue
 import shutil
 import threading
@@ -10,6 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Windows requires 'spawn' for multiprocessing with CUDA
+try:
+    multiprocessing.set_start_method("spawn", force=False)
+except RuntimeError:
+    pass  # already set
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, UploadFile
@@ -49,7 +56,7 @@ def index():
 async def cleanup_loop():
     while True:
         await asyncio.sleep(300)
-        cutoff = datetime.utcnow() - timedelta(hours=1)
+        cutoff = datetime.now(tz=__import__('datetime').timezone.utc) - timedelta(hours=1)
         for job_id, job in list(jobs.items()):
             if job["status"] in ("done", "error", "partial") and job["created_at"] < cutoff:
                 shutil.rmtree(OUTPUTS / job_id, ignore_errors=True)
@@ -60,6 +67,152 @@ async def cleanup_loop():
 
 
 executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _subprocess_convert_bundle(source: str, page_start: int, page_end: int,
+                                out_json_path: str, pipeline: str, ocr: bool,
+                                pdf_backend: str, queue_max_size: int,
+                                do_picture_description: bool, pic_desc_model: str,
+                                vlm_model: str, layout_batch_size: int,
+                                table_batch_size: int, ocr_batch_size: int,
+                                table_mode: str, accelerator: str,
+                                gemini_enrich: bool, save_images: bool) -> dict:
+    """Run a single bundle conversion in a child process.
+
+    This function is the target for multiprocessing.Process. It creates a fresh
+    DocumentConverter, converts the page range, serializes to disk, and exits.
+    When the process exits, the OS reclaims ALL memory (CPU + GPU).
+
+    Returns a dict with status info written to a sidecar .meta.json file.
+    """
+    import time
+    import json
+    import gc
+
+    t0 = time.perf_counter()
+    meta = {"status": "error", "page_count": 0, "duration": 0, "error": None}
+    meta_path = out_json_path + ".meta.json"
+
+    try:
+        from docling.datamodel.settings import settings
+        settings.debug.profile_pipeline_timings = True
+
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
+        from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+
+        _backend_cls = PyPdfiumDocumentBackend if pdf_backend == "pypdfium" else DoclingParseDocumentBackend
+
+        if accelerator == "auto":
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
+        else:
+            device = accelerator
+
+        # Build batch kwargs
+        _batch_kw = {}
+        if layout_batch_size > 0:
+            _batch_kw["layout_batch_size"] = layout_batch_size
+        if table_batch_size > 0:
+            _batch_kw["table_batch_size"] = table_batch_size
+        if ocr_batch_size > 0:
+            _batch_kw["ocr_batch_size"] = ocr_batch_size
+
+        if accelerator != "auto":
+            from docling.datamodel.pipeline_options import AcceleratorOptions, AcceleratorDevice
+            _dev = AcceleratorDevice.CUDA if accelerator == "cuda" else AcceleratorDevice.CPU
+            _batch_kw["accelerator_options"] = AcceleratorOptions(device=_dev)
+
+        if table_mode == "fast":
+            from docling.datamodel.pipeline_options import TableStructureOptions, TableFormerMode
+            _batch_kw["table_structure_options"] = TableStructureOptions(mode=TableFormerMode.FAST)
+        elif table_mode == "accurate":
+            from docling.datamodel.pipeline_options import TableStructureOptions, TableFormerMode
+            _batch_kw["table_structure_options"] = TableStructureOptions(mode=TableFormerMode.ACCURATE)
+
+        pic_opts = {}
+        if do_picture_description:
+            from docling.datamodel.pipeline_options import PictureDescriptionVlmEngineOptions
+            preset_id = PIC_DESC_PRESETS.get(pic_desc_model, PIC_DESC_PRESETS["smolvlm"])["preset_id"]
+            pic_opts["picture_description_options"] = PictureDescriptionVlmEngineOptions.from_preset(preset_id)
+            pic_opts["generate_picture_images"] = True
+        elif gemini_enrich or save_images:
+            pic_opts["generate_picture_images"] = True
+
+        t_model = time.perf_counter()
+        if pipeline == "vlm":
+            try:
+                from docling.datamodel.pipeline_options import VlmPipelineOptions
+                from docling.pipeline.vlm_pipeline import VlmPipeline
+                from docling.datamodel import vlm_model_specs
+                preset_info = VLM_PRESETS.get(vlm_model, VLM_PRESETS["GRANITEDOCLING"])
+                preset = getattr(vlm_model_specs, preset_info["spec"])
+                opts = VlmPipelineOptions(vlm_options=preset,
+                                          do_picture_description=do_picture_description,
+                                          **pic_opts)
+                converter = DocumentConverter(
+                    format_options={InputFormat.PDF: PdfFormatOption(
+                        pipeline_cls=VlmPipeline, backend=_backend_cls, pipeline_options=opts)}
+                )
+            except ImportError:
+                opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size,
+                                          **_batch_kw, **pic_opts)
+                converter = DocumentConverter(
+                    format_options={InputFormat.PDF: PdfFormatOption(
+                        backend=_backend_cls, pipeline_options=opts)}
+                )
+        else:
+            opts = PdfPipelineOptions(do_ocr=ocr, queue_max_size=queue_max_size,
+                                      do_picture_description=do_picture_description,
+                                      **_batch_kw, **pic_opts)
+            converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(
+                    backend=_backend_cls, pipeline_options=opts)}
+            )
+        model_load_time = round(time.perf_counter() - t_model, 2)
+
+        t_conv = time.perf_counter()
+        result = converter.convert(source, page_range=(page_start, page_end))
+        bundle_pages = len(result.document.pages) if result.document.pages else 0
+
+        # Note: reorder (including orphan merge) runs AFTER concatenate()
+        # in the main process, not here. This ensures _merge_orphaned_list_descriptions
+        # works on the full document.
+
+        # Serialize to disk
+        json.dumps  # ensure json is available
+        doc_dict = result.document.model_dump(mode='json')
+        with open(out_json_path, 'w', encoding='utf-8') as f:
+            json.dump(doc_dict, f)
+
+        del doc_dict, result
+        gc.collect()
+
+        meta["status"] = "done"
+        meta["page_count"] = bundle_pages
+        meta["duration"] = round(time.perf_counter() - t0, 2)
+        meta["model_load_time"] = model_load_time
+        meta["conversion_time"] = round(time.perf_counter() - t_conv, 2)
+
+    except Exception as e:
+        meta["status"] = "error"
+        meta["error"] = str(e)
+        meta["duration"] = round(time.perf_counter() - t0, 2)
+
+    # Write meta sidecar (parent reads this to get status)
+    try:
+        import json as _j
+        with open(meta_path, 'w') as f:
+            _j.dump(meta, f)
+    except Exception:
+        pass
+
+    # Process exits here — OS reclaims ALL memory (CPU + GPU)
 
 
 EXT_MAP = {"md": ".md", "html": ".html", "json": ".json", "doctags": ".doctags"}
@@ -81,6 +234,89 @@ VLM_PRESETS = {
 }
 
 _thread_local = threading.local()  # stores current job_id per worker thread
+
+
+def _full_cleanup(converter=None, result=None):
+    """Aggressively free all Docling memory — CPU RAM and GPU VRAM.
+
+    Must be called after EVERY conversion, not just when free_vram is checked.
+    Based on community-confirmed patterns from Docling issues #2209, #2077, #2829.
+    """
+    import gc
+
+    # 1. Unload page backends and clear image caches
+    if result is not None:
+        try:
+            for page in getattr(result, 'pages', []):
+                try:
+                    if hasattr(page, '_backend') and page._backend is not None:
+                        page._backend.unload()
+                        page._backend = None
+                except Exception:
+                    pass
+                try:
+                    if hasattr(page, '_image_cache'):
+                        page._image_cache.clear()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 2. Unload document-level backend (C++ memory + pypdfium2)
+        try:
+            if hasattr(result, 'input') and hasattr(result.input, '_backend') and result.input._backend:
+                result.input._backend.unload()
+        except Exception:
+            pass
+
+    # 3. Move models off GPU to CPU, then drop all references
+    if converter is not None:
+        try:
+            for pipeline in converter.initialized_pipelines.values():
+                for attr in ('layout_model', 'table_model', 'ocr_model',
+                             'enrichment_pipe', 'preprocessing_model',
+                             'assemble_model', 'reading_order_model',
+                             'picture_description_model', 'picture_classifier',
+                             'code_formula_model'):
+                    model = getattr(pipeline, attr, None)
+                    if model is None:
+                        continue
+                    # Move model weights from GPU → CPU (frees VRAM immediately)
+                    try:
+                        if hasattr(model, 'cpu'):
+                            model.cpu()
+                        elif hasattr(model, 'model') and hasattr(model.model, 'cpu'):
+                            model.model.cpu()
+                    except Exception:
+                        pass
+                    # Drop reference so gc can collect the CPU tensors
+                    try:
+                        setattr(pipeline, attr, None)
+                    except Exception:
+                        pass
+                # Clear enrichment list if it exists
+                try:
+                    if hasattr(pipeline, 'enrichment_pipe'):
+                        pipeline.enrichment_pipe = []
+                except Exception:
+                    pass
+            converter.initialized_pipelines.clear()
+        except Exception:
+            pass
+
+    # 4. Force garbage collection (all generations) — frees CPU tensors moved from GPU
+    gc.collect(generation=0)
+    gc.collect(generation=1)
+    gc.collect(generation=2)
+
+    # 5. Release CUDA cached memory
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()  # finish all pending CUDA ops
+            torch.cuda.empty_cache()  # release cached blocks
+    except ImportError:
+        pass
 
 
 def _build_report(doc) -> dict:
@@ -708,10 +944,10 @@ def _build_converter(pipeline, ocr, pdf_backend, queue_max_size,
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
-    from docling.backend.docling_parse_v4_backend import DoclingParseV4DocumentBackend
+    from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
     from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 
-    _backend_cls = PyPdfiumDocumentBackend if pdf_backend == "pypdfium" else DoclingParseV4DocumentBackend
+    _backend_cls = PyPdfiumDocumentBackend if pdf_backend == "pypdfium" else DoclingParseDocumentBackend
 
     if accelerator == "auto":
         device = "cuda" if torch_cuda_available() else "cpu"
@@ -834,6 +1070,9 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
 
     def send_report(data: dict):
         job["queue"].put(f"__REPORT__:{_json2.dumps(data)}")
+
+    converter = None
+    result = None
 
     try:
         from docling.datamodel.settings import settings
@@ -996,19 +1235,15 @@ def _run_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str
         job["status"] = "error"
         job["error"] = str(e)
     finally:
-        if free_vram and torch_cuda_available():
-            import gc, torch
-            # Delete converter and its cached pipelines to release model tensors
-            try:
-                converter.initialized_pipelines.clear()
-            except Exception:
-                pass
-            try:
-                del converter
-            except Exception:
-                pass
-            gc.collect()
-            torch.cuda.empty_cache()
+        _full_cleanup(converter=converter, result=result)
+        try:
+            del converter
+        except Exception:
+            pass
+        try:
+            del result
+        except Exception:
+            pass
         docling_logger.removeHandler(handler)
         enricher_logger.removeHandler(gemini_handler)
         job["queue"].put(None)  # sentinel
@@ -1048,6 +1283,8 @@ def _run_multi_conversion(job_id, sources, filenames, pipeline, ocr, fmt,
 
     def send_file_status(data: dict):
         job["queue"].put(f"__FILE_STATUS__:{_json2.dumps(data)}")
+
+    converter = None
 
     try:
         from docling.datamodel.settings import settings
@@ -1232,18 +1469,11 @@ def _run_multi_conversion(job_id, sources, filenames, pipeline, ocr, fmt,
         job["status"] = "error"
         job["error"] = str(e)
     finally:
-        if free_vram and torch_cuda_available():
-            import gc, torch
-            try:
-                converter.initialized_pipelines.clear()
-            except Exception:
-                pass
-            try:
-                del converter
-            except Exception:
-                pass
-            gc.collect()
-            torch.cuda.empty_cache()
+        _full_cleanup(converter=converter)
+        try:
+            del converter
+        except Exception:
+            pass
         docling_logger.removeHandler(handler)
         job["queue"].put(None)  # sentinel
 
@@ -1352,6 +1582,572 @@ def _run_batched_conversion(source, converter, fmt, batch_size, page_from, page_
     return text, total_page_count, {}, all_docs
 
 
+def _run_bundled_conversion(job_id: str, source: str, pipeline: str, ocr: bool, fmt: str,
+                            do_picture_description: bool, pic_desc_model: str, vlm_model: str,
+                            do_chunk: bool, chunk_max_tokens: int,
+                            pdf_backend: str, queue_max_size: int,
+                            reorder: bool, layout_batch_size: int, table_batch_size: int,
+                            ocr_batch_size: int, table_mode: str, accelerator: str,
+                            free_vram: bool, gemini_enrich: bool, save_images: bool,
+                            bundle_max_pages: int = 50, parallel_bundles: bool = False,
+                            model_reload: bool = True):
+    """TOC-based bundled conversion with fresh converter per bundle.
+
+    1. Plan bundles from TOC (PyMuPDF, lightweight)
+    2. Convert each bundle with a fresh DocumentConverter
+    3. Reorder each bundle independently
+    4. Serialize each bundle doc to disk (bounded memory)
+    5. Load all, DoclingDocument.concatenate() to merge
+    6. Inject bundle metadata into all elements
+    7. Gemini enrich + image save on merged doc
+    8. Export final JSON
+    """
+    import gc
+    import time
+    import json as _json2
+    from pathlib import Path as _Path
+
+    _thread_local.job_id = job_id
+    job = jobs[job_id]
+    job["status"] = "running"
+    out_dir = OUTPUTS / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    t_total_start = time.perf_counter()
+
+    handler = _QueueHandler(job["queue"])
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    handler.addFilter(_JobFilter(job_id))
+    docling_logger = logging.getLogger("docling")
+    docling_logger.setLevel(logging.DEBUG)
+    docling_logger.addHandler(handler)
+
+    gemini_handler = _QueueHandler(job["queue"])
+    gemini_handler.setFormatter(logging.Formatter("__GEMINI__:%(message)s"))
+    gemini_handler.addFilter(_JobFilter(job_id))
+    enricher_logger = logging.getLogger("enricher")
+    enricher_logger.setLevel(logging.DEBUG)
+    enricher_logger.addHandler(gemini_handler)
+
+    def send_timing(data: dict):
+        job["queue"].put(f"__TIMING__:{_json2.dumps(data)}")
+
+    def send_info(data: dict):
+        job["queue"].put(f"__INFO__:{_json2.dumps(data)}")
+
+    def send_report(data: dict):
+        job["queue"].put(f"__REPORT__:{_json2.dumps(data)}")
+
+    def send_bundle_status(data: dict):
+        job["queue"].put(f"__BUNDLE_STATUS__:{_json2.dumps(data)}")
+
+    try:
+        from docling.datamodel.settings import settings
+        from docling.datamodel.document import DoclingDocument
+        settings.debug.profile_pipeline_timings = True
+
+        # ── Step 1: Plan bundles ──────────────────────────────────────
+        from bundler import plan_bundles
+        t0 = time.perf_counter()
+        bundles, total_pages = plan_bundles(source, max_pages=bundle_max_pages)
+        plan_dur = round(time.perf_counter() - t0, 2)
+
+        if not bundles:
+            # No TOC found — fall back to regular conversion
+            job["queue"].put("__INFO_BATCH__:No TOC found — falling back to standard conversion")
+            send_timing({"stage": "bundle_plan", "duration": plan_dur, "bundles": 0,
+                         "fallback": True})
+            # Re-delegate to _run_conversion without bundle flag
+            docling_logger.removeHandler(handler)
+            enricher_logger.removeHandler(gemini_handler)
+            return _run_conversion(
+                job_id, source, pipeline, ocr, fmt, do_picture_description,
+                pic_desc_model, vlm_model, do_chunk, chunk_max_tokens,
+                1, 0, pdf_backend, queue_max_size, 0, reorder,
+                layout_batch_size, table_batch_size, ocr_batch_size,
+                table_mode, accelerator, free_vram, gemini_enrich, save_images
+            )
+
+        send_timing({"stage": "bundle_plan", "duration": plan_dur,
+                     "bundles": len(bundles), "total_pages": total_pages})
+        send_info({"bundle_mode": True, "bundles": len(bundles),
+                   "total_pages": total_pages, "max_pages_per_bundle": bundle_max_pages})
+
+        # Store bundle metadata on job
+        bundle_meta = [b.to_dict() for b in bundles]
+        job["bundles"] = bundle_meta
+
+        # Send initial status for all bundles
+        for i, b in enumerate(bundles):
+            send_bundle_status({"index": i, "bundle_id": b.id, "name": b.name,
+                                "pages": f"{b.page_start}-{b.page_end}",
+                                "status": "pending"})
+
+        # ── Step 2: Convert bundles ───────────────────────────────────
+        bundle_doc_paths = []
+        total_page_count = 0
+        total_model_load_time = 0.0
+
+        if parallel_bundles:
+            # ── PARALLEL: asyncio + ThreadPoolExecutor ──────────────────
+            # WHY: One converter loaded once → models shared across threads.
+            # Threads run converter.convert() in parallel. PyTorch forward
+            # passes are thread-safe (read-only on weights) and release the
+            # GIL during C++/CUDA computation, so threads get true parallelism.
+            import os
+            import asyncio as _aio
+            from concurrent.futures import ThreadPoolExecutor as _TPE2
+
+            # Workers capped at 2 — docling-parse C++ backend has memory
+            # pressure issues with too many concurrent PDF accesses
+            n_workers = 2
+            send_info({"parallel": True, "workers": n_workers})
+            job["queue"].put(f"__INFO_BATCH__:Parallel mode: {n_workers} workers, models loaded once")
+
+            # Build ONE converter — models loaded once, shared by all threads
+            t0 = time.perf_counter()
+            converter, device = _build_converter(
+                pipeline, ocr, pdf_backend, queue_max_size,
+                do_picture_description, pic_desc_model, vlm_model,
+                layout_batch_size, table_batch_size, ocr_batch_size,
+                table_mode, accelerator, send_info, send_timing,
+                gemini_enrich=gemini_enrich, save_images=save_images
+            )
+            total_model_load_time = round(time.perf_counter() - t0, 2)
+
+            # Warm up: force pipeline initialization so it's thread-safe
+            # (pipeline is lazily created on first convert() call; doing it
+            # here in the main thread avoids a race condition where multiple
+            # threads try to initialize simultaneously)
+            try:
+                _warmup = converter.convert(source, page_range=(1, 1))
+                try:
+                    _warmup.input._backend.unload()
+                except Exception:
+                    pass
+                del _warmup
+            except Exception:
+                pass  # warm-up failure is non-fatal
+
+            def _convert_one_bundle(bundle_info):
+                """Thread worker: convert one bundle using the shared converter."""
+                idx, bundle = bundle_info
+                bundle_json_path = out_dir / f"_bundle_{idx:03d}.json"
+                result_meta = {"status": "error", "page_count": 0, "duration": 0, "error": None}
+
+                send_bundle_status({"index": idx, "bundle_id": bundle.id,
+                                    "name": bundle.name, "status": "converting"})
+
+                t_start = time.perf_counter()
+                try:
+                    result = converter.convert(source, page_range=(bundle.page_start, bundle.page_end))
+                    bundle_pages = len(result.document.pages) if result.document.pages else 0
+
+                    # Serialize to disk (same as subprocess path)
+                    doc_dict = result.document.model_dump(mode='json')
+                    bundle_json_path.write_text(
+                        _json2.dumps(doc_dict, indent=None), encoding="utf-8"
+                    )
+
+                    result_meta["status"] = "done"
+                    result_meta["page_count"] = bundle_pages
+                    result_meta["duration"] = round(time.perf_counter() - t_start, 2)
+
+                    # Unload backend to free C++ memory (per-bundle cleanup)
+                    try:
+                        result.input._backend.unload()
+                    except Exception:
+                        pass
+                    del result
+
+                    # Per-bundle GC within thread
+                    import gc as _gc
+                    _gc.collect()
+
+                except Exception as e:
+                    result_meta["status"] = "error"
+                    result_meta["error"] = str(e)
+                    result_meta["duration"] = round(time.perf_counter() - t_start, 2)
+
+                return idx, bundle, bundle_json_path, result_meta
+
+            # Run all bundles in parallel via asyncio + thread pool
+            async def _run_parallel():
+                loop = _aio.get_event_loop()
+                with _TPE2(max_workers=n_workers) as pool:
+                    futures = [
+                        loop.run_in_executor(pool, _convert_one_bundle, (i, b))
+                        for i, b in enumerate(bundles)
+                    ]
+                    return await _aio.gather(*futures)
+
+            results = _aio.run(_run_parallel())
+
+            # Process results (same as subprocess path)
+            for idx, bundle, bundle_json_path, meta in results:
+                if meta["status"] == "done" and bundle_json_path.exists():
+                    bundle_doc_paths.append(bundle_json_path)
+                    total_page_count += meta["page_count"]
+                    send_timing({
+                        "stage": "bundle_done", "bundle_index": idx,
+                        "bundle_id": bundle.id, "name": bundle.name,
+                        "duration": meta["duration"], "page_count": meta["page_count"],
+                    })
+                    send_bundle_status({"index": idx, "bundle_id": bundle.id,
+                                        "name": bundle.name, "status": "done",
+                                        "page_count": meta["page_count"]})
+                else:
+                    err = meta.get("error", "unknown error")
+                    send_timing({"stage": "bundle_error", "bundle_index": idx,
+                                 "bundle_id": bundle.id, "error": err,
+                                 "duration": meta.get("duration", 0)})
+                    send_bundle_status({"index": idx, "bundle_id": bundle.id,
+                                        "name": bundle.name, "status": "error",
+                                        "error": err})
+
+            # Cleanup the shared converter (models off GPU → CPU → deleted)
+            _full_cleanup(converter=converter)
+            try:
+                del converter
+            except Exception:
+                pass
+
+        elif not model_reload:
+            # ── SEQUENTIAL, NO RELOAD: shared converter in same process ──
+            # WHY: Models loaded once, reused for all bundles sequentially.
+            # Faster than subprocess (no 3-5s reload per bundle) but memory
+            # may accumulate within the process. backend.unload() + gc between
+            # bundles mitigates C++ leaks.
+            job["queue"].put("__INFO_BATCH__:Sequential mode: models loaded once, no reload")
+
+            t0 = time.perf_counter()
+            converter, device = _build_converter(
+                pipeline, ocr, pdf_backend, queue_max_size,
+                do_picture_description, pic_desc_model, vlm_model,
+                layout_batch_size, table_batch_size, ocr_batch_size,
+                table_mode, accelerator, send_info, send_timing,
+                gemini_enrich=gemini_enrich, save_images=save_images
+            )
+            total_model_load_time = round(time.perf_counter() - t0, 2)
+
+            for i, bundle in enumerate(bundles):
+                send_bundle_status({"index": i, "bundle_id": bundle.id,
+                                    "name": bundle.name, "status": "converting"})
+                job["queue"].put(
+                    f"__INFO_BATCH__:Bundle {i+1}/{len(bundles)}: {bundle.name} "
+                    f"(pages {bundle.page_start}-{bundle.page_end})"
+                )
+
+                bundle_json_path = out_dir / f"_bundle_{i:03d}.json"
+                t_b = time.perf_counter()
+                try:
+                    result = converter.convert(source, page_range=(bundle.page_start, bundle.page_end))
+                    bundle_pages = len(result.document.pages) if result.document.pages else 0
+                    total_page_count += bundle_pages
+
+                    doc_dict = result.document.model_dump(mode='json')
+                    bundle_json_path.write_text(
+                        _json2.dumps(doc_dict, indent=None), encoding="utf-8"
+                    )
+                    bundle_doc_paths.append(bundle_json_path)
+
+                    conv_time = round(time.perf_counter() - t_b, 2)
+                    send_timing({
+                        "stage": "bundle_done", "bundle_index": i,
+                        "bundle_id": bundle.id, "name": bundle.name,
+                        "duration": conv_time, "page_count": bundle_pages,
+                    })
+                    send_bundle_status({"index": i, "bundle_id": bundle.id,
+                                        "name": bundle.name, "status": "done",
+                                        "page_count": bundle_pages})
+
+                    # Per-bundle cleanup: unload C++ backend, gc
+                    try:
+                        result.input._backend.unload()
+                    except Exception:
+                        pass
+                    del result
+                    gc.collect()
+
+                except Exception as be:
+                    conv_time = round(time.perf_counter() - t_b, 2)
+                    send_timing({"stage": "bundle_error", "bundle_index": i,
+                                 "bundle_id": bundle.id, "error": str(be),
+                                 "duration": conv_time})
+                    send_bundle_status({"index": i, "bundle_id": bundle.id,
+                                        "name": bundle.name, "status": "error",
+                                        "error": str(be)})
+
+            # Cleanup shared converter after all bundles
+            _full_cleanup(converter=converter)
+            try:
+                del converter
+            except Exception:
+                pass
+
+        else:
+            # ── SEQUENTIAL + RELOAD: subprocess per bundle ────────────
+            #    Each bundle runs in its own child process. When the child
+            #    exits, the OS reclaims ALL memory. Guarantees constant
+            #    memory but reloads models per bundle (~3-5s overhead).
+            for i, bundle in enumerate(bundles):
+                send_bundle_status({"index": i, "bundle_id": bundle.id,
+                                    "name": bundle.name, "status": "converting"})
+                job["queue"].put(
+                    f"__INFO_BATCH__:Bundle {i+1}/{len(bundles)}: {bundle.name} "
+                    f"(pages {bundle.page_start}-{bundle.page_end})"
+                )
+
+                bundle_json_path = out_dir / f"_bundle_{i:03d}.json"
+                meta_path = str(bundle_json_path) + ".meta.json"
+
+                proc = multiprocessing.Process(
+                    target=_subprocess_convert_bundle,
+                    args=(
+                        source, bundle.page_start, bundle.page_end,
+                        str(bundle_json_path), pipeline, ocr, pdf_backend,
+                        queue_max_size, do_picture_description, pic_desc_model,
+                        vlm_model, layout_batch_size, table_batch_size,
+                        ocr_batch_size, table_mode, accelerator,
+                        gemini_enrich, save_images,
+                    ),
+                )
+                proc.start()
+                proc.join()
+
+                meta = {"status": "error", "page_count": 0, "duration": 0, "error": "subprocess failed"}
+                try:
+                    meta_file = Path(meta_path)
+                    if meta_file.exists():
+                        meta = _json2.loads(meta_file.read_text(encoding="utf-8"))
+                        meta_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+                if meta["status"] == "done" and bundle_json_path.exists():
+                    bundle_doc_paths.append(bundle_json_path)
+                    total_page_count += meta["page_count"]
+                    total_model_load_time += meta.get("model_load_time", 0)
+                    send_timing({
+                        "stage": "bundle_done", "bundle_index": i,
+                        "bundle_id": bundle.id, "name": bundle.name,
+                        "duration": meta["duration"], "page_count": meta["page_count"],
+                    })
+                    send_bundle_status({"index": i, "bundle_id": bundle.id,
+                                        "name": bundle.name, "status": "done",
+                                        "page_count": meta["page_count"]})
+                else:
+                    err = meta.get("error", "unknown error")
+                    send_timing({"stage": "bundle_error", "bundle_index": i,
+                                 "bundle_id": bundle.id, "error": err,
+                                 "duration": meta.get("duration", 0)})
+                    send_bundle_status({"index": i, "bundle_id": bundle.id,
+                                        "name": bundle.name, "status": "error",
+                                        "error": err})
+                    log.warning("Bundle %s failed: %s", bundle.id, err)
+
+        job["page_count"] = total_page_count
+
+        if total_model_load_time > 0:
+            send_timing({"stage": "models_loading", "duration": round(total_model_load_time, 2),
+                         "bundles": len(bundle_doc_paths)})
+
+        # ── Step 3: Merge all bundle documents ───────────────────────
+        if not bundle_doc_paths:
+            raise RuntimeError("All bundles failed — no documents to merge")
+
+        t0 = time.perf_counter()
+        bundle_docs = []
+        for bp in bundle_doc_paths:
+            doc = DoclingDocument.load_from_json(filename=str(bp))
+            bundle_docs.append(doc)
+
+        merged_doc = DoclingDocument.concatenate(bundle_docs)
+
+        # Free individual bundle docs
+        del bundle_docs
+        gc.collect()
+
+        send_timing({"stage": "merge_done",
+                     "duration": round(time.perf_counter() - t0, 2),
+                     "bundles_merged": len(bundle_doc_paths)})
+
+        # ── Step 3b: Reorder merged doc (includes orphan list merge) ──
+        if reorder:
+            t0 = time.perf_counter()
+            _reorder_body_children(merged_doc)
+            send_timing({"stage": "reorder_done", "duration": round(time.perf_counter() - t0, 2)})
+
+        # ── Step 4: Inject bundle metadata into elements ─────────────
+        t0 = time.perf_counter()
+
+        # Build page_no → bundle lookup (used during JSON export to inject metadata)
+        page_to_bundle = {}
+        for b in bundles:
+            for p in range(b.page_start, b.page_end + 1):
+                page_to_bundle[p] = b
+
+        # ── Step 5: Report ────────────────────────────────────────────
+        try:
+            t0 = time.perf_counter()
+            report = _build_report(merged_doc)
+            send_report(report)
+            send_timing({"stage": "report_done", "duration": round(time.perf_counter() - t0, 2)})
+        except Exception:
+            pass
+
+        # ── Step 6: Gemini enrich + image save (on merged doc) ────────
+        image_path_map = {}
+        if gemini_enrich:
+            import json as _json_e
+            from enricher import enrich as _gemini_enrich
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            _fname = _Path(source).name
+            t0 = time.perf_counter()
+            try:
+                with _TPE(max_workers=2) as _pool:
+                    _f_enrich = _pool.submit(_gemini_enrich, merged_doc, _fname)
+                    _f_images = _pool.submit(_save_item_images, merged_doc, out_dir, source)
+                    image_path_map = _f_images.result()
+                    n_enriched, prompt_log, token_stats = _f_enrich.result()
+
+                n_pics = sum(1 for v in image_path_map.values() if "picture_" in v)
+                n_tabs = sum(1 for v in image_path_map.values() if "table_" in v)
+                _dur = round(time.perf_counter() - t0, 2)
+
+                prompts_path = out_dir / "prompts.json"
+                prompts_path.write_text(_json_e.dumps(prompt_log, indent=2), encoding="utf-8")
+                job["prompts_path"] = prompts_path
+
+                send_timing({
+                    "stage": "gemini_enrich_done", "duration": _dur,
+                    "pictures": n_enriched,
+                    "input_tokens": token_stats["input_tokens"],
+                    "output_tokens": token_stats["output_tokens"],
+                    "cost_usd": token_stats["cost_usd"],
+                    "images_saved_pictures": n_pics,
+                    "images_saved_tables": n_tabs,
+                })
+                job["queue"].put(
+                    f"__GEMINI__:Done — {n_enriched} pic(s) in {_dur}s | "
+                    f"in:{token_stats['input_tokens']} out:{token_stats['output_tokens']} "
+                    f"tokens | cost: ${token_stats['cost_usd']:.6f}"
+                )
+                job["queue"].put("__GEMINI__:__PROMPTS_READY__")
+            except Exception as _ee:
+                _dur = round(time.perf_counter() - t0, 2)
+                send_timing({"stage": "gemini_enrich_done", "duration": _dur, "error": str(_ee)})
+                job["queue"].put(f"__GEMINI__:ERROR after {_dur}s: {_ee}")
+        elif save_images:
+            t0 = time.perf_counter()
+            image_path_map = _save_item_images(merged_doc, out_dir, source)
+            n_pics = sum(1 for v in image_path_map.values() if "picture_" in v)
+            n_tabs = sum(1 for v in image_path_map.values() if "table_" in v)
+            send_timing({"stage": "images_saved", "duration": round(time.perf_counter() - t0, 2),
+                         "pictures": n_pics, "tables": n_tabs})
+
+        # ── Step 7: Export ────────────────────────────────────────────
+        t0 = time.perf_counter()
+        if fmt == "json":
+            d = merged_doc.model_dump(mode='json')
+            if reorder:
+                d = _reindex_json_reading_order(d)
+
+            # Inject image paths
+            if image_path_map:
+                for entry in d.get("pictures", []):
+                    ref = entry.get("self_ref")
+                    if ref in image_path_map:
+                        entry["image_path"] = image_path_map[ref]
+                for entry in d.get("tables", []):
+                    ref = entry.get("self_ref")
+                    if ref in image_path_map:
+                        entry["image_path"] = image_path_map[ref]
+
+            # Inject bundle metadata into every element
+            for arr_key in ("texts", "tables", "pictures", "groups",
+                            "key_value_items", "form_items"):
+                for entry in d.get(arr_key, []):
+                    prov = entry.get("prov")
+                    if prov and len(prov) > 0:
+                        page_no = prov[0].get("page_no")
+                        b = page_to_bundle.get(page_no)
+                        if b:
+                            entry["bundle"] = {
+                                "id": b.id,
+                                "name": b.name,
+                                "is_continuation": b.is_continuation,
+                                "continuation_of": b.continuation_of,
+                            }
+
+            # Add bundle plan to top-level JSON
+            d["bundle_plan"] = [b.to_dict() for b in bundles]
+
+            text = _json2.dumps(d, indent=2)
+        else:
+            text = _export_result_from_doc(merged_doc, fmt, reorder=reorder,
+                                            image_path_map=image_path_map)
+        send_timing({"stage": "export_done", "duration": round(time.perf_counter() - t0, 2)})
+
+        # ── Step 8: Write file ────────────────────────────────────────
+        ext = EXT_MAP[fmt]
+        out_path = out_dir / f"result{ext}"
+        t0 = time.perf_counter()
+        out_path.write_text(text, encoding="utf-8")
+        send_timing({"stage": "file_write_done",
+                     "duration": round(time.perf_counter() - t0, 2),
+                     "size_kb": round(len(text.encode("utf-8")) / 1024, 1)})
+
+        # ── Step 9: Chunking ─────────────────────────────────────────
+        if do_chunk:
+            t0 = time.perf_counter()
+            from docling.chunking import HybridChunker
+            chunker = HybridChunker(max_tokens=chunk_max_tokens)
+            chunks_display = []
+            chunks_full = []
+            for chunk_idx, chunk in enumerate(chunker.chunk(merged_doc)):
+                page = None
+                if chunk.meta.doc_items:
+                    prov = getattr(chunk.meta.doc_items[0], 'prov', None)
+                    if prov:
+                        page = prov[0].page_no
+                chunks_display.append({
+                    "index": chunk_idx,
+                    "text": chunk.text,
+                    "headings": chunk.meta.headings or [],
+                    "page": page,
+                })
+                chunks_full.append(chunk.model_dump(mode='json'))
+            job["chunks"] = chunks_display
+            chunks_path = out_dir / "chunks.json"
+            chunks_path.write_text(_json2.dumps(chunks_full, indent=2), encoding="utf-8")
+            job["chunks_path"] = chunks_path
+            send_timing({"stage": "chunking_done",
+                         "duration": round(time.perf_counter() - t0, 2),
+                         "chunk_count": len(chunks_display)})
+
+        # ── Cleanup temp bundle files ────────────────────────────────
+        for bp in bundle_doc_paths:
+            try:
+                bp.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        send_timing({"stage": "total", "duration": round(time.perf_counter() - t_total_start, 2)})
+        job["result_path"] = out_path
+        job["status"] = "done"
+
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+    finally:
+        # No converter to clean up — it ran in subprocesses.
+        # Clean up any remaining objects in main process.
+        _full_cleanup()
+        docling_logger.removeHandler(handler)
+        enricher_logger.removeHandler(gemini_handler)
+        job["queue"].put(None)  # sentinel
+
+
 def torch_cuda_available() -> bool:
     try:
         import torch
@@ -1372,7 +2168,7 @@ def _make_job(fmt: str) -> tuple[str, dict]:
         "prompts_path": None,
         "page_count": 0,
         "error": None,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(tz=__import__('datetime').timezone.utc),
         "multi": False,
         "files": [],
         "zip_path": None,
@@ -1422,6 +2218,10 @@ async def convert(
     save_images: bool = Form(default=False),
     doc_concurrency: int = Form(default=4),
     doc_batch_size_setting: int = Form(default=4),
+    bundle: bool = Form(default=False),
+    bundle_max_pages: int = Form(default=50),
+    model_reload: bool = Form(default=True),
+    parallel_bundles: bool = Form(default=False),
 ):
     # ---- Multi-file path ----
     if len(files) > 1:
@@ -1529,7 +2329,17 @@ async def convert(
             raise HTTPException(400, "URL fetch timed out after 30 seconds.")
         source = str(upload_path)
 
-    executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder, layout_batch_size, table_batch_size, ocr_batch_size, table_mode, accelerator, free_vram, gemini_enrich, save_images)
+    if bundle and source.lower().endswith(".pdf"):
+        executor.submit(
+            _run_bundled_conversion, job_id, source, pipeline, ocr, format,
+            do_picture_description, pic_desc_model, vlm_model,
+            do_chunk, chunk_max_tokens, pdf_backend, queue_max_size,
+            reorder, layout_batch_size, table_batch_size, ocr_batch_size,
+            table_mode, accelerator, free_vram, gemini_enrich, save_images,
+            bundle_max_pages, parallel_bundles, model_reload
+        )
+    else:
+        executor.submit(_run_conversion, job_id, source, pipeline, ocr, format, do_picture_description, pic_desc_model, vlm_model, do_chunk, chunk_max_tokens, page_from, page_to, pdf_backend, queue_max_size, batch_size, reorder, layout_batch_size, table_batch_size, ocr_batch_size, table_mode, accelerator, free_vram, gemini_enrich, save_images)
     return {"job_id": job_id}
 
 
@@ -1582,6 +2392,8 @@ async def stream(job_id: str):
                     yield f"event: log\ndata: {safe_msg[15:]}\n\n"
                 elif safe_msg.startswith("__FILE_STATUS__:"):
                     yield f"event: file_status\ndata: {safe_msg[16:]}\n\n"
+                elif safe_msg.startswith("__BUNDLE_STATUS__:"):
+                    yield f"event: bundle_status\ndata: {safe_msg[18:]}\n\n"
                 elif safe_msg.startswith("__GEMINI__:"):
                     yield f"event: gemini_log\ndata: {safe_msg[11:]}\n\n"
                 else:
