@@ -40,6 +40,8 @@ log = logging.getLogger(__name__)
 VERTEX_PROJECT       = os.environ.get("VERTEX_PROJECT", "")
 VERTEX_LOCATION      = os.environ.get("VERTEX_LOCATION", "us-central1")
 GEMINI_MODEL         = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
+IMAGE_MODEL          = os.environ.get("IMAGE_MODEL", GEMINI_MODEL)
+TABLE_MODEL          = os.environ.get("TABLE_MODEL", GEMINI_MODEL)
 ENRICHER_CONCURRENCY = int(os.environ.get("ENRICHER_CONCURRENCY", "10"))
 
 # Gemini 2.5 Flash pricing ($/1M tokens) — override via .env if rates change
@@ -203,16 +205,33 @@ def _get_classification(pic_item) -> str:
     return "figure"
 
 
-def _pic_to_b64(pic_item, doc) -> Optional[str]:
+def _pic_to_b64(pic_item, doc) -> tuple[Optional[str], str]:
+    """Extract base64 image data and mime type from a picture item.
+
+    Tries the pre-encoded data URI first (pic_item.image.uri), falling back
+    to PIL re-encode only if the URI is missing. Returns (b64_string, mime_type).
+    """
+    # Try pre-encoded data URI first (avoids PIL re-encode)
+    try:
+        uri = pic_item.image.uri if pic_item.image else None
+        if uri and uri.startswith("data:"):
+            # Format: "data:image/png;base64,iVBOR..."
+            header, b64_data = uri.split(",", 1)
+            mime = header.split(":")[1].split(";")[0]  # "image/png"
+            return b64_data, mime
+    except Exception:
+        pass
+
+    # Fallback: re-encode from PIL
     try:
         pil_img = pic_item.get_image(doc)
         if pil_img is None:
-            return None
+            return None, "image/png"
         buf = BytesIO()
         pil_img.convert("RGB").save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
+        return base64.b64encode(buf.getvalue()).decode(), "image/png"
     except Exception:
-        return None
+        return None, "image/png"
 
 
 # ── Prompt builder ─────────────────────────────────────────────────────────────
@@ -352,8 +371,12 @@ def _parse_table_response(text: str) -> dict:
 async def _enrich_picture(client, doc, pic_item, flat: list,
                           pic_pos: int, sem: asyncio.Semaphore,
                           model: str, filename: str,
-                          prompt_log: list):
-    b64 = _pic_to_b64(pic_item, doc)
+                          prompt_log: list, b64_data: str = None,
+                          mime_type: str = "image/png"):
+    b64 = b64_data
+    mime = mime_type
+    if not b64:
+        b64, mime = _pic_to_b64(pic_item, doc)
     if not b64:
         log.warning("Could not get image for picture %s — skipping", pic_item.self_ref)
         return
@@ -390,7 +413,7 @@ async def _enrich_picture(client, doc, pic_item, flat: list,
                 [
                     types.Part.from_bytes(
                         data=base64.b64decode(b64),
-                        mime_type="image/png",
+                        mime_type=mime,
                     ),
                     types.Part.from_text(text=prompt),
                 ],
@@ -483,7 +506,8 @@ async def _enrich_table(client, doc, table_item, flat: list,
 
 async def _enrich_async(doc, filename: str,
                         project: str, location: str,
-                        model: str, concurrency: int):
+                        image_model: str, table_model: str,
+                        concurrency: int):
     from google import genai
 
     if not project:
@@ -512,22 +536,31 @@ async def _enrich_async(doc, filename: str,
         log.info("No pictures or tables found — skipping Gemini enrichment")
         return 0, [], {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 
-    log.info("Gemini enrichment: %d pictures + %d tables → %s (concurrency=%d)",
-             len(pictures), len(tables), model, concurrency)
+    log.info("Gemini enrichment: %d pictures→%s + %d tables→%s (concurrency=%d)",
+             len(pictures), image_model, len(tables), table_model, concurrency)
+
+    # Pre-encode all picture images (sync, before async loop)
+    pic_b64_cache = {}
+    for pic in pictures:
+        b64, mime = _pic_to_b64(pic, doc)
+        if b64:
+            pic_b64_cache[pic.self_ref] = (b64, mime)
 
     prompt_log: list = []
 
-    # Picture tasks
+    # Picture tasks — use IMAGE_MODEL + pre-encoded b64
     pic_tasks = [
         _enrich_picture(client, doc, pic, flat, pic_positions[pic.self_ref],
-                        sem, model, filename, prompt_log)
+                        sem, image_model, filename, prompt_log,
+                        b64_data=pic_b64_cache.get(pic.self_ref, (None, None))[0],
+                        mime_type=pic_b64_cache.get(pic.self_ref, (None, "image/png"))[1])
         for pic in pictures
     ]
 
-    # Table tasks
+    # Table tasks — use TABLE_MODEL (text-only, no vision needed)
     tbl_tasks = [
         _enrich_table(client, doc, tbl, flat, tbl_positions[tbl.self_ref],
-                      sem, model, filename, prompt_log)
+                      sem, table_model, filename, prompt_log)
         for tbl in tables
     ]
 
@@ -555,11 +588,13 @@ async def _enrich_async(doc, filename: str,
 def enrich(doc, filename: str = "document.pdf",
            project: str = VERTEX_PROJECT,
            location: str = VERTEX_LOCATION,
-           model: str = GEMINI_MODEL,
+           image_model: str = IMAGE_MODEL,
+           table_model: str = TABLE_MODEL,
            concurrency: int = ENRICHER_CONCURRENCY) -> tuple:
     """Synchronous wrapper — call from _run_conversion thread.
 
-    Returns (n_pictures, prompt_log, token_stats) where token_stats has
+    Returns (n_enriched, prompt_log, token_stats) where token_stats has
     input_tokens, output_tokens, cost_usd.
     """
-    return asyncio.run(_enrich_async(doc, filename, project, location, model, concurrency))
+    return asyncio.run(_enrich_async(doc, filename, project, location,
+                                     image_model, table_model, concurrency))
